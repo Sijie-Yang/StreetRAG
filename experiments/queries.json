@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "description": "StreetRAG evaluation query set (bilingual) for npj Urban Sustainability",
+  "queries": [
+    {"id": "q01", "query": "哪些街道既舒适又有活力？", "category": "composite", "lang": "zh"},
+    {"id": "q02", "query": "find the most walkable streets", "category": "composite", "lang": "en"},
+    {"id": "q03", "query": "NUS附近最舒适的街道", "category": "spatial", "lang": "zh"},
+    {"id": "q04", "query": "streets near Marina Bay Sands with high integration", "category": "spatial", "lang": "en"},
+    {"id": "q05", "query": "高整合度的主要街道", "category": "syntax", "lang": "zh"},
+    {"id": "q06", "query": "city-wide strategic corridors with best connectivity", "category": "syntax", "lang": "en"},
+    {"id": "q07", "query": "适合步行的邻里街道", "category": "multiscale", "lang": "zh"},
+    {"id": "q08", "query": "commercial district streets with high POI density", "category": "poi", "lang": "en"},
+    {"id": "q09", "query": "最靠近樟宜机场的街道", "category": "spatial", "lang": "zh"},
+    {"id": "q10", "query": "streets with human scale and green accessibility", "category": "composite", "lang": "en"},
+    {"id": "q11", "query": "15分钟生活圈内的活力街道", "category": "sustainability", "lang": "zh"},
+    {"id": "q12", "query": "heat-exposed streets with low tree cover", "category": "sustainability", "lang": "en"},
+    {"id": "q13", "query": "分析已有指数 most_walkable_streets", "category": "analyze", "lang": "zh"},
+    {"id": "q14", "query": "compare local vs global integration patterns", "category": "multiscale", "lang": "en"},
+    {"id": "q15", "query": "哪些街道空间聚集性最强？", "category": "cluster", "lang": "zh"}
+  ]
+}

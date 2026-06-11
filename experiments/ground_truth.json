@@ -1,0 +1,9 @@
+{
+  "_comment": "Per-query ideal feature sets. Fill with expert annotation before running the full evaluation. Feature names must match data/feature_registry.json feature_statistics keys.",
+  "_annotation_protocol": "For each query, 2+ annotators independently list the features an expert analyst would select; keep features chosen by majority. Record disagreements for the paper's inter-annotator agreement statistic.",
+  "q01": {"relevant_features": [], "annotators": [], "notes": "舒适+活力 composite"},
+  "q02": {"relevant_features": [], "annotators": [], "notes": "walkability composite"},
+  "q05": {"relevant_features": [], "annotators": [], "notes": "high-integration main streets"},
+  "q07": {"relevant_features": [], "annotators": [], "notes": "neighbourhood walkable → local radius"},
+  "q08": {"relevant_features": [], "annotators": [], "notes": "POI density commercial"}
+}

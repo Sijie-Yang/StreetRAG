@@ -1,0 +1,29 @@
+{
+  "_comment_api_key": "Set OPENAI_API_KEY in the environment (export OPENAI_API_KEY=sk-...), or copy this file to RAG_setting.local.json (gitignored) and fill openai_api_key.",
+  "openai_api_key": "",
+  "llm_model": "gpt-4o",
+  "embedding_model": "text-embedding-3-small",
+  "llm_temperature": 0.0,
+  "llm_seed": 42,
+  "llm_max_retries": 3,
+  "top_k": 10,
+  "analysis_top_k": 10,
+  "feature_retrieval_top_m": 60,
+  "feature_retrieval_method": "embedding",
+  "default_route_weight": "length",
+  "preferred_crs_epsg": null,
+  "colors": {
+    "primary": "#0087FF",
+    "secondary": "#FF8F00",
+    "middle": "#D1FF00"
+  },
+  "visualization": {
+    "font_size": {
+      "title": 20,
+      "label": 20,
+      "text": 20,
+      "legend": 20
+    },
+    "line_width": 5
+  }
+}

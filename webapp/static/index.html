@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StreetRAG · 街道空间句法问答</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.6.0/dist/maplibre-gl.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      --bg-panel: rgba(255,255,255,0.96);
+      --bg-panel-dark: rgba(15,23,42,0.96);
+      --fg: #0f172a;
+      --muted: #475569;
+      --accent: #0ea5e9;
+      --border: #e2e8f0;
+      --shadow: 0 8px 32px rgba(15,23,42,0.16);
+    }
+    html, body { margin: 0; height: 100vh; }
+    body {
+      font-family: -apple-system, "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+      color: var(--fg); overflow: hidden;
+    }
+    #map { position: absolute; inset: 0; }
+
+    /* Map toolbar (top-right): basemap + colormap + click-mode */
+    .map-toolbar {
+      position: fixed; top: 12px; right: 12px; z-index: 4;
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      background: var(--bg-panel); border-radius: 10px; box-shadow: var(--shadow);
+      padding: 8px 10px; font-size: 12px; max-width: min(460px, 92vw);
+    }
+    .map-toolbar label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }
+    .map-toolbar select, .map-toolbar button {
+      font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);
+      background: white; color: var(--fg); cursor: pointer;
+    }
+    .map-toolbar button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+    .map-toolbar button.primary[aria-pressed="true"] { background: #0369a1; }
+
+    /* Indices drawer (left) */
+    .drawer {
+      position: fixed; top: 12px; left: 12px; bottom: 12px; z-index: 3;
+      width: 320px; max-width: 90vw;
+      background: var(--bg-panel); border-radius: 12px; box-shadow: var(--shadow);
+      padding: 12px; display: flex; flex-direction: column; gap: 8px;
+      transition: transform 0.2s ease;
+    }
+    .drawer.collapsed { transform: translateX(-340px); }
+    .drawer-header { display: flex; align-items: center; justify-content: space-between; }
+    .drawer-title { font-weight: 600; font-size: 14px; }
+    .drawer-hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
+    .drawer-toggle {
+      position: absolute; right: -28px; top: 18px; width: 28px; height: 56px;
+      background: var(--bg-panel); border-radius: 0 12px 12px 0; box-shadow: var(--shadow);
+      display: flex; align-items: center; justify-content: center; cursor: pointer;
+      border: none; padding: 0; font-size: 14px; color: var(--muted);
+    }
+    .indices-list { flex: 1; min-height: 60px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px; }
+
+    /* Data files panel */
+    .datasets-box { max-height: 200px; overflow-y: auto; font-size: 11px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: #f8fafc; }
+    .ds-net { font-weight: 600; color: var(--fg); margin-bottom: 2px; }
+    .ds-counts { color: var(--muted); margin-bottom: 6px; }
+    .ds-file { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; flex-wrap: wrap; }
+    .ds-file .fname { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; word-break: break-all; }
+    .ds-badge { font-size: 9.5px; padding: 1px 6px; border-radius: 999px; white-space: nowrap; }
+    .ds-badge.net { background: #0ea5e9; color: white; }
+    .ds-badge.cand { background: #e0f2fe; color: #0369a1; }
+    .ds-badge.ok { background: #dcfce7; color: #15803d; }
+    .ds-badge.conv { background: #fef9c3; color: #a16207; }
+    .ds-badge.no { background: #fee2e2; color: #b91c1c; }
+    .ds-badge.miss { background: #f1f5f9; color: #94a3b8; text-decoration: line-through; }
+    details.ds-cols { width: 100%; margin-left: 12px; }
+    details.ds-cols summary { cursor: pointer; color: var(--accent); font-size: 10px; }
+    details.ds-cols .cols { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: 10px; line-height: 1.5; word-break: break-all; }
+    .ds-note { color: var(--muted); font-size: 10px; line-height: 1.5; margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 4px; }
+    .ds-group { font-weight: 600; color: var(--fg); font-size: 10.5px; margin: 6px 0 2px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .ds-group:first-of-type { margin-top: 2px; }
+    .index-item {
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 8px 10px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--border); background: #f8fafc; transition: all 0.15s ease;
+    }
+    .index-item:hover { border-color: var(--accent); background: #f0f9ff; }
+    .index-item.active { border-color: var(--accent); background: #e0f2fe; }
+    .index-item .name { font-size: 13px; font-weight: 600; color: var(--fg); }
+    .index-item .meta { font-size: 11px; color: var(--muted); }
+    .index-item .query { font-size: 11px; color: var(--muted); font-style: italic;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Chat panel (bottom-right) */
+    .panel {
+      position: fixed; right: 16px; bottom: 16px; z-index: 3;
+      width: min(440px, calc(100vw - 32px));
+      max-height: 56vh; display: flex; flex-direction: column; gap: 8px;
+      background: var(--bg-panel); border-radius: 12px; box-shadow: var(--shadow);
+      padding: 12px;
+    }
+    .panel .title { font-weight: 600; font-size: 14px; }
+    .panel .hint { font-size: 11px; color: var(--muted); line-height: 1.45; }
+    .panel .section-title { font-size: 11px; color: var(--muted); margin-top: 4px; font-weight: 500; }
+    #activity {
+      max-height: 110px; overflow: auto; font-size: 11px; font-family: ui-monospace, "Menlo", monospace;
+      color: #e2e8f0; background: #1e293b; padding: 8px; border-radius: 8px;
+      line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    }
+    #log {
+      flex: 1; min-height: 80px; max-height: 230px; overflow: auto; font-size: 13px;
+      padding: 10px; background: #f8fafc; border: 1px solid var(--border);
+      border-radius: 8px; line-height: 1.6;
+    }
+    #log .msg { margin-bottom: 8px; }
+    #log .role { font-weight: 600; color: var(--muted); font-size: 11px; }
+    #log .role.you { color: var(--accent); }
+    #log .role.sys { color: #059669; }
+    #log .role.err { color: #dc2626; }
+    .row { display: flex; gap: 8px; }
+    #msg { flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
+    #go { padding: 8px 14px; border: 0; border-radius: 8px; background: #0f172a; color: #fff; font-size: 14px; cursor: pointer; }
+    #go:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Colorbar (bottom-left, between drawer and chat) */
+    .colorbar {
+      position: fixed; left: 12px; bottom: 16px; z-index: 3;
+      background: var(--bg-panel); border-radius: 10px; box-shadow: var(--shadow);
+      padding: 10px 14px; min-width: 220px; max-width: 340px;
+      transition: opacity 0.2s ease;
+    }
+    .colorbar.hidden { opacity: 0; pointer-events: none; transform: translateY(8px); }
+    .colorbar .cb-title { font-size: 12px; font-weight: 600; color: var(--fg); margin-bottom: 4px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+    .colorbar .cb-bar { height: 14px; border-radius: 4px; margin: 4px 0 6px; border: 1px solid var(--border); }
+    .colorbar .cb-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .colorbar .cb-stats { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .colorbar.under-drawer { left: 348px; }
+    .drawer.collapsed ~ .colorbar.under-drawer { left: 12px; }
+
+    /* Hover popup */
+    .maplibregl-popup-content { font-size: 12px; padding: 8px 10px; max-width: 280px; }
+    .popup-row { display: flex; justify-content: space-between; gap: 8px; }
+    .popup-row .k { color: var(--muted); }
+    .popup-row .v { font-variant-numeric: tabular-nums; }
+    .popup-mini { margin-top: 6px; font-size: 11px; color: var(--muted); }
+    .popup-mini ul { padding-left: 14px; margin: 4px 0 0 0; }
+
+    /* Route mode banner */
+    .route-banner {
+      position: fixed; top: 80px; right: 12px; z-index: 4;
+      background: #fef3c7; border: 1px solid #fcd34d; color: #92400e;
+      padding: 8px 12px; border-radius: 8px; font-size: 12px; display: none;
+      box-shadow: var(--shadow); max-width: min(420px, 92vw);
+    }
+    .route-banner.visible { display: block; }
+
+    @media (max-width: 720px) {
+      .drawer { width: 86vw; }
+      .colorbar.under-drawer { left: 12px; }
+      .panel { max-height: 70vh; }
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="map-toolbar">
+    <label>底图
+      <select id="basemapSelect" aria-label="底图">
+        <option value="carto-voyager">Carto Voyager</option>
+        <option value="carto-light">Carto 浅色</option>
+        <option value="carto-dark">Carto 深色</option>
+        <option value="osm">OpenStreetMap</option>
+        <option value="opentopomap">OpenTopo</option>
+        <option value="esri-sat">Esri 卫星</option>
+      </select>
+    </label>
+    <label>色带
+      <select id="colormapSelect" aria-label="指数色带">
+        <option value="cividis">Cividis（色盲友好）</option>
+        <option value="viridis">Viridis</option>
+        <option value="magma">Magma</option>
+        <option value="diverging">红-白-绿（发散）</option>
+        <option value="rdbu">红-白-蓝</option>
+        <option value="default">蓝→琥珀</option>
+      </select>
+    </label>
+    <label>颜色映射
+      <select id="stretchSelect" aria-label="数值映射">
+        <option value="p5_p95">1–99% 拉伸</option>
+        <option value="iqr">IQR 拉伸</option>
+        <option value="minmax">最小–最大</option>
+      </select>
+    </label>
+    <button id="routeModeBtn" aria-pressed="false" title="点击两次地图设置起点和终点">📍 路径模式</button>
+    <button id="exportBtn" title="导出当前指数 GeoJSON">⬇ 导出</button>
+  </div>
+
+  <div class="route-banner" id="routeBanner">
+    路径模式：在地图上依次点击「起点」和「终点」。可选用当前指数作为路径权重（最舒适路径）。
+    <label style="margin-left:8px">
+      权重
+      <select id="routeWeightSelect">
+        <option value="length">length（最短）</option>
+      </select>
+    </label>
+    <button id="routeCancelBtn" style="margin-left:8px">取消</button>
+  </div>
+
+  <aside class="drawer" id="drawer" aria-label="已存指数">
+    <div class="drawer-header">
+      <div class="drawer-title">StreetRAG</div>
+      <select id="citySelect" title="切换城市" style="font-size:12px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);max-width:150px;"></select>
+      <button id="refreshIndicesBtn" title="刷新" style="background:none;border:0;cursor:pointer;font-size:14px;">⟳</button>
+    </div>
+    <div class="drawer-hint">
+      点击下方任一指数 → 直接渲染到地图（不调用 LLM）。<br />
+      Hover 任一街道可看真实数值与 top-3 特征贡献。
+    </div>
+    <div class="drawer-hint" style="margin-top:4px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>数据文件</strong>
+        <button id="rescanBtn" title="重新扫描 data 目录" style="background:none;border:0;cursor:pointer;font-size:11px;color:var(--accent);">重新扫描 ⟳</button>
+      </div>
+      <div class="datasets-box" id="datasetsBox" style="margin-top:4px;">加载中…</div>
+    </div>
+    <div class="drawer-hint" style="margin-top:4px;">
+      <strong>上传数据</strong>
+      <input type="file" id="uploadInput" accept=".gpkg,.geojson,.csv,.shp,.parquet" style="font-size:11px;width:100%;margin-top:4px;" />
+      <select id="integratorSelect" style="font-size:11px;width:100%;margin-top:4px;">
+        <option value="snap_nearest">最近点 (point)</option>
+        <option value="buffer_density">缓冲区密度 (point)</option>
+        <option value="line_overlay">线叠加 (line)</option>
+        <option value="polygon_area_weighted">面积加权 (polygon)</option>
+      </select>
+      <button id="uploadBtn" style="font-size:11px;margin-top:4px;width:100%;padding:4px;border-radius:6px;border:1px solid var(--border);cursor:pointer;">上传并集成</button>
+    </div>
+    <div class="indices-list" id="indicesList">
+      <div style="color:var(--muted);font-size:12px;text-align:center;padding:16px;">加载中…</div>
+    </div>
+    <button class="drawer-toggle" id="drawerToggle" aria-label="折叠">‹</button>
+  </aside>
+
+  <div class="colorbar hidden under-drawer" id="colorbar" aria-live="polite">
+    <div class="cb-title" id="cbTitle">—</div>
+    <div class="cb-bar" id="cbBar"></div>
+    <div class="cb-axis">
+      <span id="cbMin">min</span>
+      <span id="cbMid">med</span>
+      <span id="cbMax">max</span>
+    </div>
+    <div class="cb-stats" id="cbStats"></div>
+  </div>
+
+  <div class="panel">
+    <div class="title">StreetRAG · 街道问答</div>
+    <div class="hint">
+      用自然语言提问，例如：<em>"找出热舒适最差的城市干道"</em>、<em>"NUS 附近最可步行的街"</em>。<br />
+      内部会做：嵌入式特征检索 → 单次结构化规划 → 多尺度统计 → Moran's I。
+    </div>
+    <div class="section-title">运行中</div>
+    <div id="activity" aria-live="polite" aria-relevant="additions"></div>
+    <div class="section-title">对话</div>
+    <div id="log" aria-live="polite"></div>
+    <form class="row" id="f">
+      <input id="msg" type="text" placeholder="例如：最舒适且最有活力的街道是哪些？" autocomplete="off" />
+      <button type="submit" id="go">发送</button>
+    </form>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.6.0/dist/maplibre-gl.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streetrag"
+version = "0.3.0"
+description = "Street-level RAG framework for multi-scale urban network analysis"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "osmnx>=1.9.4",
+    "networkx>=3.2",
+    "geopandas>=0.14",
+    "shapely>=2.0",
+    "pyproj>=3.6",
+    "fiona>=1.9",
+    "matplotlib>=3.7",
+    "tqdm>=4.65",
+    "momepy>=0.7",
+    "scipy>=1.10",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "openai>=1.40",
+    "pydantic>=2.7",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "pytest-cov>=4.1"]
+lisa = ["esda>=2.5", "libpysal>=4.9"]
+
+[project.scripts]
+streetrag = "streetrag.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["streetrag*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

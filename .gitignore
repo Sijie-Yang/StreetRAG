@@ -1,0 +1,47 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.eggs/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Editor / OS ---
+.DS_Store
+.idea/
+.vscode/
+
+# --- Local data & caches (do NOT commit large/regenerable artifacts) ---
+cache/
+data/*.gpkg
+data/*.csv
+data/llm_cache/
+data/embeddings.npz
+data/embeddings.meta.json
+figure/*.png
+figure/*.jpg
+/tmp/
+
+# Multi-city workspace: all per-city data is local
+data/cities/
+data/active_city.json
+
+# Experiment outputs
+experiments/results/
+
+# --- Secrets ---
+data/RAG_setting.local.json
+.env
+.env.*
+!.env.example
+
+# --- Logs ---
+*.log
+data/llm_logs/

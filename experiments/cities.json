@@ -1,0 +1,10 @@
+{
+  "cities": [
+    {"name": "Singapore", "network_type": "drive", "status": "primary"},
+    {"name": "Amsterdam, Netherlands", "network_type": "walk", "status": "planned"},
+    {"name": "Barcelona, Spain", "network_type": "walk", "status": "planned"},
+    {"name": "Tokyo, Japan", "network_type": "walk", "status": "planned"},
+    {"name": "Copenhagen, Denmark", "network_type": "bike", "status": "planned"}
+  ],
+  "download_command": "streetrag download --city \"{name}\" --network-type {network_type}"
+}

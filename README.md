@@ -1,7 +1,11 @@
-# StreetRAG
+<p align="center">
+  <img src="./docs/assets/fig_logo.png" alt="StreetRAG" width="520">
+</p>
 
-> Ask a city questions in natural language — get a colour-mapped street network
-> plus a multi-scale, evidence-grounded answer.
+<p align="center">
+  <em>Ask a city questions in natural language — get a colour-mapped street network
+  plus a multi-scale, evidence-grounded answer.</em>
+</p>
 
 StreetRAG is an open framework for **LLM-agent-driven, multi-scale street
 network analysis**. The core idea fits in one sentence:

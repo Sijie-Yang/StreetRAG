@@ -29,9 +29,28 @@ figure/*.png
 figure/*.jpg
 /tmp/
 
-# Multi-city workspace: all per-city data is local
-data/cities/
+# Multi-city workspace: local by default
+data/cities/*
+!data/cities/singapore/
+
+# Singapore sample city (network + source files committed as demo case)
+!data/cities/singapore/Singapore_Street_Network_drive.gpkg
+!data/cities/singapore/sources/
+!data/cities/singapore/sources/**
+!data/cities/singapore/feature_registry.json
+!data/cities/singapore/feature_descriptions.json
+
+# Keep integrated features / caches / indices local (re-run integrate after clone)
+data/cities/singapore/features/
+data/cities/singapore/embeddings.*
+data/cities/singapore/llm_cache/
+data/cities/singapore/llm_logs/
+data/cities/singapore/indices/
+data/cities/singapore/reviews.*
+data/cities/singapore/place_cache.json
+
 data/active_city.json
+!data/active_city.json
 
 # Experiment outputs
 experiments/results/
@@ -45,3 +64,5 @@ data/RAG_setting.local.json
 # --- Logs ---
 *.log
 data/llm_logs/
+
+reference_agent_code/

@@ -56,12 +56,15 @@ def cmd_city(args: argparse.Namespace) -> None:
 
 def cmd_download(args: argparse.Namespace) -> None:
     from streetrag.core.workspace import slugify_city
-    from streetrag.ingest.download import download_network
+    from streetrag.ingest.download import download_network, download_pois
 
     ws = _workspace()
     name = args.city_name or slugify_city(args.city.split(",")[0])
     dest = ws.create_city(name)
     download_network(args.city, network_type=args.network_type, data_dir=dest)
+    if getattr(args, "with_pois", False):
+        download_pois(args.city, data_dir=dest)
+        print("POIs saved under sources/. Next: streetrag scan && streetrag integrate")
     ws.set_active(name)
     print(f"Active city: {name}. Next: streetrag scan && streetrag integrate")
 
@@ -107,7 +110,12 @@ def cmd_integrate(args: argparse.Namespace) -> None:
     from streetrag.ingest.pipeline import run_integration
 
     catalog = FeatureCatalog(_registry_path(args))
-    run_integration(catalog, compute_syntax_metrics=not args.no_syntax)
+    run_integration(
+        catalog,
+        compute_syntax_metrics=not args.no_syntax,
+        index_reviews=not getattr(args, "no_reviews", False),
+        verbose=True,
+    )
 
 
 def cmd_syntax(args: argparse.Namespace) -> None:
@@ -136,6 +144,15 @@ def cmd_ask(args: argparse.Namespace) -> None:
     )
     print(f"\nIndex: {result.get('index_col')}")
     print(f"Reply:\n{result.get('reply', '')}")
+
+
+def cmd_migrate_storage(args: argparse.Namespace) -> None:
+    from streetrag.core.feature_catalog import FeatureCatalog
+    from streetrag.core.feature_store import migrate_wide_gpkg_to_split
+
+    catalog = FeatureCatalog(_registry_path(args))
+    summary = migrate_wide_gpkg_to_split(catalog, verbose=True)
+    print(f"Done: {summary}")
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
@@ -171,6 +188,11 @@ def main(argv: list[str] | None = None) -> None:
     p_dl.add_argument("--city", required=True, help="OSM place query, e.g. 'London, UK'")
     p_dl.add_argument("--network-type", default="drive",
                       choices=["drive", "walk", "bike", "all", "all_private"])
+    p_dl.add_argument(
+        "--with-pois",
+        action="store_true",
+        help="Also download OSM POIs (amenity/shop/tourism) into sources/",
+    )
     _add_city_arg(p_dl)
     p_dl.set_defaults(func=cmd_download)
 
@@ -190,6 +212,7 @@ def main(argv: list[str] | None = None) -> None:
     p_int = sub.add_parser("integrate", help="Integrate features onto street network")
     p_int.add_argument("registry", nargs="?", default=None)
     p_int.add_argument("--no-syntax", action="store_true")
+    p_int.add_argument("--no-reviews", action="store_true", help="Skip review text indexing")
     _add_city_arg(p_int)
     p_int.set_defaults(func=cmd_integrate)
 
@@ -198,6 +221,14 @@ def main(argv: list[str] | None = None) -> None:
     p_syn.add_argument("--radii", help="Comma-separated radii in meters, e.g. 500,1500,4500")
     _add_city_arg(p_syn)
     p_syn.set_defaults(func=cmd_syntax)
+
+    p_mig = sub.add_parser(
+        "migrate-storage",
+        help="Split wide network GPKG into topology GPKG + features/*.parquet",
+    )
+    p_mig.add_argument("registry", nargs="?", default=None)
+    _add_city_arg(p_mig)
+    p_mig.set_defaults(func=cmd_migrate_storage)
 
     p_ask = sub.add_parser("ask", help="Ask a natural-language question")
     p_ask.add_argument("query", help="Natural language query")

@@ -207,6 +207,10 @@ def angular_segment_analysis(
 
 
 def _metric_integration(edges: gpd.GeoDataFrame, radius: int, col_name: str) -> gpd.GeoDataFrame:
+    from streetrag.core.network_gpkg import EDGE_ID_COL, ensure_edge_ids
+
+    edges = ensure_edge_ids(edges)
+    preserved = edges.drop(columns=["geometry"]).copy()
     gdf = edges.copy()
     if "length" not in gdf.columns:
         gdf["length"] = gdf.geometry.length
@@ -224,6 +228,26 @@ def _metric_integration(edges: gpd.GeoDataFrame, radius: int, col_name: str) -> 
     result = momepy.nx_to_gdf(primal, points=False)
     if "mm_len" in result.columns and "mm_len" not in edges.columns:
         result = result.drop(columns=["mm_len"])
+    # Reattach stable edge_id and topology columns after momepy reordering.
+    if EDGE_ID_COL in preserved.columns:
+        if len(result) == len(preserved):
+            for col in preserved.columns:
+                if col not in result.columns:
+                    result[col] = preserved[col].values
+        else:
+            result = result.merge(
+                preserved[[EDGE_ID_COL] + [c for c in preserved.columns if c != EDGE_ID_COL]],
+                left_index=True,
+                right_index=True,
+                how="left",
+                suffixes=("", "_old"),
+            )
+            for col in list(result.columns):
+                if col.endswith("_old"):
+                    base = col[:-4]
+                    if base in result.columns:
+                        result[base] = result[base].combine_first(result[col])
+                    result = result.drop(columns=[col])
     return result
 
 

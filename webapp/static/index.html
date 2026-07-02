@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>StreetRAG · 街道空间句法问答</title>
+  <title>StreetRAG · Street Network Q&amp;A</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.6.0/dist/maplibre-gl.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; }
@@ -18,12 +18,11 @@
     }
     html, body { margin: 0; height: 100vh; }
     body {
-      font-family: -apple-system, "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
       color: var(--fg); overflow: hidden;
     }
     #map { position: absolute; inset: 0; }
 
-    /* Map toolbar (top-right): basemap + colormap + click-mode */
     .map-toolbar {
       position: fixed; top: 12px; right: 12px; z-index: 4;
       display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
@@ -38,16 +37,15 @@
     .map-toolbar button.primary { background: var(--accent); color: white; border-color: var(--accent); }
     .map-toolbar button.primary[aria-pressed="true"] { background: #0369a1; }
 
-    /* Indices drawer (left) */
     .drawer {
       position: fixed; top: 12px; left: 12px; bottom: 12px; z-index: 3;
       width: 320px; max-width: 90vw;
       background: var(--bg-panel); border-radius: 12px; box-shadow: var(--shadow);
       padding: 12px; display: flex; flex-direction: column; gap: 8px;
-      transition: transform 0.2s ease;
+      transition: transform 0.2s ease; overflow: hidden;
     }
     .drawer.collapsed { transform: translateX(-340px); }
-    .drawer-header { display: flex; align-items: center; justify-content: space-between; }
+    .drawer-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
     .drawer-title { font-weight: 600; font-size: 14px; }
     .drawer-hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
     .drawer-toggle {
@@ -56,18 +54,44 @@
       display: flex; align-items: center; justify-content: center; cursor: pointer;
       border: none; padding: 0; font-size: 14px; color: var(--muted);
     }
-    .indices-list { flex: 1; min-height: 60px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px; }
+    .indices-list { display: flex; flex-direction: column; gap: 6px; padding-right: 2px; }
 
-    /* Data files panel */
-    .datasets-box { max-height: 200px; overflow-y: auto; font-size: 11px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: #f8fafc; }
+    .drawer-pane {
+      flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; overflow: hidden;
+    }
+    .drawer-pane.hidden { display: none; }
+    .pane-toolbar {
+      display: flex; justify-content: space-between; align-items: center; gap: 6px;
+      font-size: 11px; flex-shrink: 0;
+    }
+    .pane-toolbar strong { font-size: 12px; }
+    .pane-scroll {
+      flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+      font-size: 11px; border: 1px solid var(--border); border-radius: 8px;
+      padding: 6px 8px; background: #f8fafc;
+    }
+    .pane-footer {
+      flex-shrink: 0; font-size: 11px; border-top: 1px solid var(--border);
+      padding-top: 8px; margin-top: 2px;
+    }
+    .datasets-box { font-size: 11px; }
     .ds-net { font-weight: 600; color: var(--fg); margin-bottom: 2px; }
     .ds-counts { color: var(--muted); margin-bottom: 6px; }
     .ds-file { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; flex-wrap: wrap; }
-    .ds-file .fname { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; word-break: break-all; }
+    .feat-row, .ds-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px;
+      padding: 6px 0; border-bottom: 1px solid #f1f5f9; font-size: 11px;
+    }
+    .feat-row .fname, .ds-row .fname {
+      font-family: ui-monospace, Menlo, monospace; font-size: 10.5px;
+      word-break: break-all; flex: 1 1 120px; min-width: 0;
+    }
+    .row-meta { font-size: 10px; color: var(--muted); flex: 1 1 100%; }
     .ds-badge { font-size: 9.5px; padding: 1px 6px; border-radius: 999px; white-space: nowrap; }
     .ds-badge.net { background: #0ea5e9; color: white; }
     .ds-badge.cand { background: #e0f2fe; color: #0369a1; }
     .ds-badge.ok { background: #dcfce7; color: #15803d; }
+    .ds-badge.warn { background: #fef3c7; color: #b45309; }
     .ds-badge.conv { background: #fef9c3; color: #a16207; }
     .ds-badge.no { background: #fee2e2; color: #b91c1c; }
     .ds-badge.miss { background: #f1f5f9; color: #94a3b8; text-decoration: line-through; }
@@ -77,6 +101,69 @@
     .ds-note { color: var(--muted); font-size: 10px; line-height: 1.5; margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 4px; }
     .ds-group { font-weight: 600; color: var(--fg); font-size: 10.5px; margin: 6px 0 2px; text-transform: uppercase; letter-spacing: 0.04em; }
     .ds-group:first-of-type { margin-top: 2px; }
+    .ds-actions { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; margin-top: 4px; }
+    .drawer-tabs { display: flex; gap: 4px; margin: 4px 0; flex-shrink: 0; }
+    .drawer-tab { flex: 1; font-size: 10px; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: #f8fafc; cursor: pointer; }
+    .drawer-tab.active { background: var(--accent); color: white; border-color: var(--accent); }
+    .feat-actions, .index-actions { display: flex; gap: 4px; margin-left: auto; flex-shrink: 0; }
+    #globalProgress { position: fixed; top: 0; left: 0; right: 0; height: 6px; z-index: 30; background: #e2e8f0; display: none; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+    #globalProgress .fill { height: 100%; background: var(--accent); width: 0; transition: width 0.25s ease; }
+    #globalProgressLabel { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 31; font-size: 12px; font-weight: 600; background: var(--bg-panel); padding: 8px 14px; border-radius: 8px; box-shadow: var(--shadow); display: none; border: 1px solid var(--border); max-width: 90vw; text-align: center; }
+    #globalProgressBackdrop { position: fixed; inset: 0; z-index: 29; background: rgba(15,23,42,.08); display: none; pointer-events: none; }
+    #contextChips { display: none; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+    .ctx-chip { font-size: 10px; background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 999px; }
+    .ctx-chip button { border: 0; background: none; cursor: pointer; margin-left: 4px; }
+    .thinking-block { font-size: 11px; color: var(--muted); margin: 4px 0; }
+    .think-pre { white-space: pre-wrap; font-size: 10px; max-height: 120px; overflow: auto; }
+    .tool-card { font-size: 11px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; margin: 4px 0; }
+    .tool-card.running { border-color: #fbbf24; }
+    .proposal-wrap { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+    .proposal-hint { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+    .proposal-card { text-align: left; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; cursor: pointer; }
+    .proposal-card .proposal-col { font-size: 10px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; margin-top: 2px; }
+    .proposal-card:hover { border-color: var(--accent); }
+    .proposal-card.created { border-color: #16a34a; background: #f0fdf4; cursor: default; }
+    .proposal-card:disabled { opacity: 0.7; cursor: wait; }
+    #tablePanel { position: fixed; right: 12px; top: 80px; bottom: 280px; width: 360px; max-width: 90vw; z-index: 5; background: var(--bg-panel); border-radius: 12px; box-shadow: var(--shadow); padding: 10px; overflow: auto; }
+    #tablePanel.hidden { display: none; }
+    #tablePanel table { width: 100%; font-size: 11px; border-collapse: collapse; }
+    #tablePanel th, #tablePanel td { border: 1px solid var(--border); padding: 4px 6px; }
+    .stream-text { color: var(--fg); font-style: italic; }
+
+    .modal-backdrop {
+      position: fixed; inset: 0; z-index: 20;
+      background: rgba(15,23,42,0.45); display: none;
+      align-items: center; justify-content: center; padding: 16px;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--bg-panel); border-radius: 12px; box-shadow: var(--shadow);
+      width: min(560px, 96vw); max-height: 85vh; display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    .modal.wide { width: min(720px, 96vw); }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 14px; border-bottom: 1px solid var(--border);
+    }
+    .modal-title { font-weight: 600; font-size: 14px; }
+    .modal-close { background: none; border: 0; font-size: 18px; cursor: pointer; color: var(--muted); }
+    .modal-body { padding: 12px 14px; overflow-y: auto; font-size: 12px; line-height: 1.55; }
+    .modal-footer { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+    .modal-body label { display: block; margin: 8px 0 4px; color: var(--muted); font-size: 11px; }
+    .modal-body input, .modal-body select {
+      width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px;
+    }
+    .modal-body .hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
+    .btn-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+    .btn-sm {
+      font-size: 11px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border);
+      background: white; cursor: pointer; color: var(--fg);
+    }
+    .btn-sm.primary { background: var(--accent); color: white; border-color: var(--accent); }
+    .btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
+    .city-toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; flex-shrink: 0; }
+    .city-toolbar select { flex: 1; min-width: 100px; font-size: 12px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); }
     .index-item {
       display: flex; flex-direction: column; gap: 2px;
       padding: 8px 10px; border-radius: 8px; cursor: pointer;
@@ -89,24 +176,23 @@
     .index-item .query { font-size: 11px; color: var(--muted); font-style: italic;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    /* Chat panel (bottom-right) */
     .panel {
       position: fixed; right: 16px; bottom: 16px; z-index: 3;
       width: min(440px, calc(100vw - 32px));
-      max-height: 56vh; display: flex; flex-direction: column; gap: 8px;
+      max-height: 68vh; display: flex; flex-direction: column; gap: 8px;
       background: var(--bg-panel); border-radius: 12px; box-shadow: var(--shadow);
-      padding: 12px;
+      padding: 12px; overflow: hidden;
     }
     .panel .title { font-weight: 600; font-size: 14px; }
     .panel .hint { font-size: 11px; color: var(--muted); line-height: 1.45; }
     .panel .section-title { font-size: 11px; color: var(--muted); margin-top: 4px; font-weight: 500; }
     #activity {
-      max-height: 110px; overflow: auto; font-size: 11px; font-family: ui-monospace, "Menlo", monospace;
+      min-height: 110px; max-height: 18vh; overflow: auto; font-size: 11px; font-family: ui-monospace, "Menlo", monospace;
       color: #e2e8f0; background: #1e293b; padding: 8px; border-radius: 8px;
-      line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+      line-height: 1.5; white-space: pre-wrap; word-break: break-word; flex-shrink: 0;
     }
     #log {
-      flex: 1; min-height: 80px; max-height: 230px; overflow: auto; font-size: 13px;
+      flex: 1; min-height: 160px; max-height: 42vh; overflow: auto; font-size: 13px;
       padding: 10px; background: #f8fafc; border: 1px solid var(--border);
       border-radius: 8px; line-height: 1.6;
     }
@@ -120,7 +206,6 @@
     #go { padding: 8px 14px; border: 0; border-radius: 8px; background: #0f172a; color: #fff; font-size: 14px; cursor: pointer; }
     #go:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    /* Colorbar (bottom-left, between drawer and chat) */
     .colorbar {
       position: fixed; left: 12px; bottom: 16px; z-index: 3;
       background: var(--bg-panel); border-radius: 10px; box-shadow: var(--shadow);
@@ -136,7 +221,6 @@
     .colorbar.under-drawer { left: 348px; }
     .drawer.collapsed ~ .colorbar.under-drawer { left: 12px; }
 
-    /* Hover popup */
     .maplibregl-popup-content { font-size: 12px; padding: 8px 10px; max-width: 280px; }
     .popup-row { display: flex; justify-content: space-between; gap: 8px; }
     .popup-row .k { color: var(--muted); }
@@ -144,7 +228,6 @@
     .popup-mini { margin-top: 6px; font-size: 11px; color: var(--muted); }
     .popup-mini ul { padding-left: 14px; margin: 4px 0 0 0; }
 
-    /* Route mode banner */
     .route-banner {
       position: fixed; top: 80px; right: 12px; z-index: 4;
       background: #fef3c7; border: 1px solid #fcd34d; color: #92400e;
@@ -156,88 +239,112 @@
     @media (max-width: 720px) {
       .drawer { width: 86vw; }
       .colorbar.under-drawer { left: 12px; }
-      .panel { max-height: 70vh; }
+      .panel { max-height: 78vh; }
+      #activity { max-height: 20vh; }
+      #log { max-height: 48vh; }
     }
   </style>
 </head>
 <body>
+  <div id="globalProgressBackdrop"></div>
+  <div id="globalProgress"><div class="fill"></div></div>
+  <div id="globalProgressLabel"></div>
+
   <div id="map"></div>
 
   <div class="map-toolbar">
-    <label>底图
-      <select id="basemapSelect" aria-label="底图">
+    <label>Basemap
+      <select id="basemapSelect" aria-label="Basemap">
         <option value="carto-voyager">Carto Voyager</option>
-        <option value="carto-light">Carto 浅色</option>
-        <option value="carto-dark">Carto 深色</option>
+        <option value="carto-light">Carto Light</option>
+        <option value="carto-dark">Carto Dark</option>
         <option value="osm">OpenStreetMap</option>
         <option value="opentopomap">OpenTopo</option>
-        <option value="esri-sat">Esri 卫星</option>
+        <option value="esri-sat">Esri Satellite</option>
       </select>
     </label>
-    <label>色带
-      <select id="colormapSelect" aria-label="指数色带">
-        <option value="cividis">Cividis（色盲友好）</option>
+    <label>Colormap
+      <select id="colormapSelect" aria-label="Index colormap">
+        <option value="cividis">Cividis (colorblind-safe)</option>
         <option value="viridis">Viridis</option>
         <option value="magma">Magma</option>
-        <option value="diverging">红-白-绿（发散）</option>
-        <option value="rdbu">红-白-蓝</option>
-        <option value="default">蓝→琥珀</option>
+        <option value="diverging">Red–White–Green</option>
+        <option value="rdbu">Red–White–Blue</option>
+        <option value="default">Blue → Amber</option>
       </select>
     </label>
-    <label>颜色映射
-      <select id="stretchSelect" aria-label="数值映射">
-        <option value="p5_p95">1–99% 拉伸</option>
-        <option value="iqr">IQR 拉伸</option>
-        <option value="minmax">最小–最大</option>
+    <label>Stretch
+      <select id="stretchSelect" aria-label="Value stretch">
+        <option value="p5_p95">1–99% stretch</option>
+        <option value="iqr">IQR stretch</option>
+        <option value="minmax">Min–Max</option>
       </select>
     </label>
-    <button id="routeModeBtn" aria-pressed="false" title="点击两次地图设置起点和终点">📍 路径模式</button>
-    <button id="exportBtn" title="导出当前指数 GeoJSON">⬇ 导出</button>
+    <button id="routeModeBtn" aria-pressed="false" title="Click map twice to set start and end">📍 Route mode</button>
+    <button id="exportBtn" title="Export current index GeoJSON">⬇ Export</button>
   </div>
 
   <div class="route-banner" id="routeBanner">
-    路径模式：在地图上依次点击「起点」和「终点」。可选用当前指数作为路径权重（最舒适路径）。
+    Route mode: click start, then end on the map. Optionally weight by the current index (most comfortable path).
     <label style="margin-left:8px">
-      权重
+      Weight
       <select id="routeWeightSelect">
-        <option value="length">length（最短）</option>
+        <option value="length">length (shortest)</option>
       </select>
     </label>
-    <button id="routeCancelBtn" style="margin-left:8px">取消</button>
+    <button id="routeCancelBtn" style="margin-left:8px">Cancel</button>
   </div>
 
-  <aside class="drawer" id="drawer" aria-label="已存指数">
+  <aside class="drawer" id="drawer" aria-label="Saved indices">
     <div class="drawer-header">
       <div class="drawer-title">StreetRAG</div>
-      <select id="citySelect" title="切换城市" style="font-size:12px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);max-width:150px;"></select>
-      <button id="refreshIndicesBtn" title="刷新" style="background:none;border:0;cursor:pointer;font-size:14px;">⟳</button>
-    </div>
-    <div class="drawer-hint">
-      点击下方任一指数 → 直接渲染到地图（不调用 LLM）。<br />
-      Hover 任一街道可看真实数值与 top-3 特征贡献。
-    </div>
-    <div class="drawer-hint" style="margin-top:4px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <strong>数据文件</strong>
-        <button id="rescanBtn" title="重新扫描 data 目录" style="background:none;border:0;cursor:pointer;font-size:11px;color:var(--accent);">重新扫描 ⟳</button>
+      <div style="display:flex;gap:4px;align-items:center;">
+        <button id="apiSettingsBtn" class="btn-sm" title="OpenAI API and model settings">API</button>
+        <button id="refreshIndicesBtn" title="Refresh" style="background:none;border:0;cursor:pointer;font-size:14px;">⟳</button>
       </div>
-      <div class="datasets-box" id="datasetsBox" style="margin-top:4px;">加载中…</div>
     </div>
-    <div class="drawer-hint" style="margin-top:4px;">
-      <strong>上传数据</strong>
-      <input type="file" id="uploadInput" accept=".gpkg,.geojson,.csv,.shp,.parquet" style="font-size:11px;width:100%;margin-top:4px;" />
-      <select id="integratorSelect" style="font-size:11px;width:100%;margin-top:4px;">
-        <option value="snap_nearest">最近点 (point)</option>
-        <option value="buffer_density">缓冲区密度 (point)</option>
-        <option value="line_overlay">线叠加 (line)</option>
-        <option value="polygon_area_weighted">面积加权 (polygon)</option>
-      </select>
-      <button id="uploadBtn" style="font-size:11px;margin-top:4px;width:100%;padding:4px;border-radius:6px;border:1px solid var(--border);cursor:pointer;">上传并集成</button>
+    <div class="drawer-hint city-toolbar">
+      <select id="citySelect" title="Switch city"></select>
+      <button id="syntaxCityBtn" class="btn-sm" title="Configure syntax radii and run">Syntax</button>
+      <button id="addCityBtn" class="btn-sm primary" title="Download a new city from OSM">+ City</button>
     </div>
-    <div class="indices-list" id="indicesList">
-      <div style="color:var(--muted);font-size:12px;text-align:center;padding:16px;">加载中…</div>
+    <div class="drawer-tabs">
+      <button type="button" class="drawer-tab active" data-pane="data">Data</button>
+      <button type="button" class="drawer-tab" data-pane="features">Features</button>
+      <button type="button" class="drawer-tab" data-pane="indices">Indices</button>
     </div>
-    <button class="drawer-toggle" id="drawerToggle" aria-label="折叠">‹</button>
+    <div id="pane-data" class="drawer-pane">
+      <div class="pane-toolbar">
+        <strong>Data files</strong>
+        <button id="rescanBtn" class="btn-sm" title="Rescan data directory">Rescan</button>
+      </div>
+      <div class="pane-scroll datasets-box" id="datasetsBox">Loading…</div>
+      <div class="pane-footer">
+        <strong>Upload data</strong>
+        <input type="file" id="uploadInput" accept=".gpkg,.geojson,.csv,.shp,.parquet" style="font-size:11px;width:100%;margin-top:4px;" />
+        <select id="integratorSelect" style="font-size:11px;width:100%;margin-top:4px;">
+          <option value="snap_nearest">Nearest point (point)</option>
+          <option value="buffer_density">Buffer density (point)</option>
+          <option value="poi_category_density_rating">POI category density + rating (point)</option>
+          <option value="line_overlay">Line overlay (line)</option>
+          <option value="polygon_area_weighted">Area-weighted (polygon)</option>
+        </select>
+        <button id="uploadBtn" style="font-size:11px;margin-top:4px;width:100%;padding:4px;border-radius:6px;border:1px solid var(--border);cursor:pointer;">Upload &amp; integrate</button>
+      </div>
+    </div>
+    <div id="pane-features" class="drawer-pane hidden">
+      <input type="search" id="featuresSearch" placeholder="Search features…" style="width:100%;font-size:11px;padding:4px;border-radius:6px;border:1px solid var(--border);flex-shrink:0;" />
+      <div id="featuresList" class="pane-scroll indices-list">Loading…</div>
+    </div>
+    <div id="pane-indices" class="drawer-pane hidden">
+      <div class="drawer-hint" style="flex-shrink:0;margin:0;">
+        Click any saved index below to render on the map (no LLM call).
+      </div>
+      <div class="pane-scroll indices-list" id="indicesList">
+        <div style="color:var(--muted);font-size:12px;text-align:center;padding:16px;">Loading…</div>
+      </div>
+    </div>
+    <button class="drawer-toggle" id="drawerToggle" aria-label="Collapse drawer">‹</button>
   </aside>
 
   <div class="colorbar hidden under-drawer" id="colorbar" aria-live="polite">
@@ -251,23 +358,113 @@
     <div class="cb-stats" id="cbStats"></div>
   </div>
 
-  <div class="panel">
-    <div class="title">StreetRAG · 街道问答</div>
-    <div class="hint">
-      用自然语言提问，例如：<em>"找出热舒适最差的城市干道"</em>、<em>"NUS 附近最可步行的街"</em>。<br />
-      内部会做：嵌入式特征检索 → 单次结构化规划 → 多尺度统计 → Moran's I。
+  <div class="modal-backdrop" id="addCityModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="addCityModalTitle">
+      <div class="modal-header">
+        <div class="modal-title" id="addCityModalTitle">Add city (auto-download)</div>
+        <button class="modal-close" id="addCityModalClose" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">Enter an OpenStreetMap place name. The system downloads the network, scans, and integrates. <strong>Singapore</strong> is included as the default example.</p>
+        <label for="addCityQuery">OSM place name</label>
+        <input id="addCityQuery" type="text" placeholder="e.g. London, UK / Tokyo, Japan / Beijing" />
+        <label for="addCitySlug">Directory name (optional)</label>
+        <input id="addCitySlug" type="text" placeholder="Auto-derived if empty, e.g. london" />
+        <label for="addCityNetwork">Network type</label>
+        <select id="addCityNetwork">
+          <option value="drive">drive (motor)</option>
+          <option value="walk">walk (pedestrian)</option>
+          <option value="bike">bike</option>
+        </select>
+        <label><input type="checkbox" id="addCityPois" /> Also download OSM POIs (slower; optional)</label>
+        <label for="addCityRadii">Syntax radii (m)</label>
+        <input id="addCityRadii" type="text" value="500,1500,4500" placeholder="500,1500,4500" />
+        <p class="hint">Default 500 / 1500 / 4500 m. Comma-separated.</p>
+        <label><input type="checkbox" id="addCitySyntax" /> Compute space syntax after add (slow)</label>
+        <div id="addCityProgress" class="hint" style="margin-top:8px;display:none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-sm" id="addCityCancel">Cancel</button>
+        <button class="btn-sm primary" id="addCitySubmit">Download &amp; add</button>
+      </div>
     </div>
-    <div class="section-title">运行中</div>
+  </div>
+
+  <div class="modal-backdrop" id="syntaxModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="syntaxModalTitle">
+      <div class="modal-header">
+        <div class="modal-title" id="syntaxModalTitle">Space Syntax · active city</div>
+        <button class="modal-close" id="syntaxModalClose" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" id="syntaxModalStatus">Loading…</p>
+        <label for="syntaxRadii">Syntax radii (m)</label>
+        <input id="syntaxRadii" type="text" value="500,1500,4500" placeholder="500,1500,4500" />
+        <p class="hint">Default 500 / 1500 / 4500. Click Run syntax to save radii to the catalog and compute metric + angular measures.</p>
+        <div id="syntaxProgress" class="hint" style="margin-top:8px;display:none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-sm" id="syntaxModalCancel">Cancel</button>
+        <button class="btn-sm primary" id="syntaxRunBtn">Run syntax</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="apiModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="apiModalTitle">
+      <div class="modal-header">
+        <div class="modal-title" id="apiModalTitle">API &amp; model settings</div>
+        <button class="modal-close" id="apiModalClose" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" id="apiModalStatus">Loading…</p>
+        <label for="apiKeyInput">OpenAI API Key</label>
+        <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-… (leave blank to keep saved key)" />
+        <p class="hint">Saved to <code>data/RAG_setting.local.json</code> (gitignored). Environment variable <code>OPENAI_API_KEY</code> takes precedence.</p>
+        <label for="llmModelInput">LLM model</label>
+        <input id="llmModelInput" type="text" placeholder="gpt-4o" />
+        <label for="embedModelInput">Embedding model</label>
+        <input id="embedModelInput" type="text" placeholder="text-embedding-3-small" />
+        <div id="apiSaveProgress" class="hint" style="margin-top:8px;display:none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-sm" id="apiClearKeyBtn" title="Clear locally saved key">Clear key</button>
+        <button class="btn-sm" id="apiModalCancel">Cancel</button>
+        <button class="btn-sm primary" id="apiSaveBtn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <aside id="tablePanel" class="hidden" aria-label="Data table">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <strong id="tablePanelTitle">Table</strong>
+      <div>
+        <button id="tablePanelExport" class="btn-sm">CSV</button>
+        <button id="tablePanelClose" class="btn-sm">×</button>
+      </div>
+    </div>
+    <div id="tablePanelTable"></div>
+  </aside>
+
+  <div class="panel">
+    <div class="title">StreetRAG · Street Q&amp;A</div>
+    <div class="hint">
+      Ask in natural language, e.g. <em>"Which arterial roads have the worst thermal comfort?"</em> or <em>"Most walkable streets near NUS"</em>.<br />
+      Pipeline: embedding feature retrieval → skill selection → multi-scale stats → Moran's I.
+    </div>
+    <div class="section-title">Running</div>
     <div id="activity" aria-live="polite" aria-relevant="additions"></div>
-    <div class="section-title">对话</div>
+    <div class="section-title">Chat</div>
     <div id="log" aria-live="polite"></div>
+    <div id="contextChips"></div>
     <form class="row" id="f">
-      <input id="msg" type="text" placeholder="例如：最舒适且最有活力的街道是哪些？" autocomplete="off" />
-      <button type="submit" id="go">发送</button>
+      <input id="msg" type="text" placeholder="e.g. Which streets are most vibrant and comfortable?" autocomplete="off" />
+      <button type="submit" id="go">Send</button>
     </form>
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@4.6.0/dist/maplibre-gl.js"></script>
   <script src="/static/app.js"></script>
+  <script type="module" src="/static/js/main.js"></script>
 </body>
 </html>

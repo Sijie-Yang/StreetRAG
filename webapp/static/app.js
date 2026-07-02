@@ -227,21 +227,22 @@
   // Activity / log
   // -------------------------------------------------------------------
   const STEP_LABELS = {
-    load_settings: "加载配置",
-    load_registry: "读取 feature registry",
-    load_gpkg: "加载街道 GeoPackage",
-    retrieve_features: "嵌入检索 · 特征召回",
-    plan: "结构化规划（features/weights/operator）",
-    agent: "Agent 选择 skill 并填参数",
-    geocode: "解析空间目标",
-    compute_index: "计算复合指数",
-    multiscale_topk: "多尺度 top-k 统计",
-    spatial_diag: "空间自相关 (Moran's I)",
-    llm: "大模型生成解读",
-    save_gpkg: "写入 GPKG",
-    update_registry: "更新 registry / feature_list",
-    complete: "完成",
-    route: "路径规划",
+    load_settings: "Loading settings",
+    load_registry: "Reading feature registry",
+    load_gpkg: "Loading street GeoPackage",
+    retrieve_features: "Embedding retrieval · feature recall",
+    plan: "Structured planning",
+    agent: "Agent selects skill",
+    geocode: "Resolving spatial target",
+    compute_index: "Computing composite index",
+    multiscale_topk: "Multi-scale top-k stats",
+    spatial_diag: "Spatial autocorrelation (Moran's I)",
+    llm: "LLM narrative",
+    save_gpkg: "Writing GPKG",
+    update_registry: "Updating registry",
+    complete: "Complete",
+    route: "Routing",
+    syntax: "Space Syntax",
   };
   function formatProgress(o) {
     if (o.type !== "progress" || !o.step) return JSON.stringify(o);
@@ -255,22 +256,156 @@
     if (d.intent) parts.push(`intent=${d.intent}`);
     if (d.operator) parts.push(`op=${d.operator}`);
     if (d.normalization) parts.push(`norm=${d.normalization}`);
-    if (d.n_edges != null) parts.push(`边 ${d.n_edges} 条`);
+    if (d.n_edges != null) parts.push(`${d.n_edges} edges`);
     if (d.n_features) parts.push(`feat=${d.n_features}`);
     if (d.crs) parts.push(d.crs);
-    if (d.index_col) parts.push("列 " + d.index_col);
+    if (d.index_col) parts.push("col " + d.index_col);
     if (d.morans_i && d.morans_i.I != null) parts.push(`I=${Number(d.morans_i.I).toFixed(3)}`);
     if (d.query) parts.push(`q="${d.query}"`);
     if (d.display_name) parts.push(`→ ${d.display_name}`);
-    if (d.filter_radius_m) parts.push(`半径 ${Number(d.filter_radius_m).toFixed(0)}m`);
-    if (d.kept != null && d.total != null) parts.push(`保留 ${d.kept}/${d.total}`);
+    if (d.filter_radius_m) parts.push(`radius ${Number(d.filter_radius_m).toFixed(0)}m`);
+    if (d.kept != null && d.total != null) parts.push(`kept ${d.kept}/${d.total}`);
     if (d.message) parts.push(d.message);
     return parts.join(" · ");
   }
-  function clearActivity() { if (activity) activity.textContent = ""; }
+  function clearActivity() {
+    if (activity) activity.innerHTML = "";
+    streamBubble = null;
+    thinkDetails = null;
+  }
+  let streamBubble = null;
+  let thinkDetails = null;
+  function appendStreamText(delta) {
+    if (!streamBubble) {
+      streamBubble = document.createElement("div");
+      streamBubble.className = "log-line sys stream-text";
+      log.appendChild(streamBubble);
+    }
+    streamBubble.textContent += delta;
+    log.scrollTop = log.scrollHeight;
+  }
+  function appendThinking(delta) {
+    if (!thinkDetails) {
+      thinkDetails = document.createElement("details");
+      thinkDetails.className = "thinking-block";
+      thinkDetails.open = true;
+      const sum = document.createElement("summary");
+      sum.textContent = "Thinking…";
+      const pre = document.createElement("pre");
+      pre.className = "think-pre";
+      thinkDetails.appendChild(sum);
+      thinkDetails.appendChild(pre);
+      activity.appendChild(thinkDetails);
+    }
+    const pre = thinkDetails.querySelector(".think-pre");
+    if (pre) pre.textContent += delta;
+  }
+  function appendToolCard(name, data, status) {
+    const card = document.createElement("div");
+    card.className = "tool-card " + status;
+    const body = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    card.innerHTML = "<strong>" + escapeHtml(name) + "</strong> <span class=\"tool-status\">" + status + "</span><pre>" + escapeHtml(body) + "</pre>";
+    activity.appendChild(card);
+  }
+  function proposalHintText() {
+    const q = window.__lastUserQuery || "";
+    if (/[\u4e00-\u9fff]/.test(q)) return "选择一个要创建的指数：";
+    return "Choose an index to create:";
+  }
+
+  function appendProposals(proposals) {
+    if (!proposals.length) return;
+    const wrap = document.createElement("div");
+    wrap.className = "proposal-wrap";
+    const hint = document.createElement("div");
+    hint.className = "proposal-hint";
+    hint.textContent = proposalHintText();
+    wrap.appendChild(hint);
+    proposals.forEach((p) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "proposal-card";
+      const title = p.name || p.index_col || "Index";
+      const col = p.index_col && p.index_col !== p.name ? p.index_col : "";
+      btn.innerHTML =
+        "<strong>" + escapeHtml(title) + "</strong>" +
+        (col ? "<div class=\"proposal-col\">" + escapeHtml(col) + "</div>" : "") +
+        "<p>" + escapeHtml(p.rationale || "") + "</p>";
+      btn.addEventListener("click", () => createIndexFromProposal(p, btn, wrap));
+      wrap.appendChild(btn);
+    });
+    log.appendChild(wrap);
+  }
+
+  function buildCreateIndexUserQuery(indexName) {
+    const orig = (window.__lastUserQuery || "").trim();
+    if (orig) {
+      return `${orig}\n\n(User confirmed index proposal: ${indexName})`;
+    }
+    return `Create index ${indexName}`;
+  }
+
+  async function createIndexFromProposal(p, btn, wrap) {
+    const features = (p.features || []).map((f) => ({
+      name: f.name,
+      weight: f.weight != null ? f.weight : 1,
+      rationale: f.rationale || "",
+    }));
+    if (!features.length) {
+      appendLog("Error", "Proposal has no features.", "err");
+      return;
+    }
+    const indexName = p.index_col || p.name;
+    if (!indexName) {
+      appendLog("Error", "Proposal is missing index name.", "err");
+      return;
+    }
+    wrap.querySelectorAll(".proposal-card").forEach((b) => { b.disabled = true; });
+    btn.textContent = "Creating…";
+    appendLog("You", `Create index: ${indexName}`, "user");
+    try {
+      window.StreetRAG?.showProgress?.(5, "Creating index…");
+      const r = await fetch(apiPath("/api/create-index"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          index_name: p.name || indexName,
+          index_col: indexName,
+          features,
+          operator: p.operator || "weighted_sum",
+          normalization: p.normalization || "robust",
+          spatial_target: p.spatial_target || null,
+          spatial_filter_radius_m: p.spatial_filter_radius_m || null,
+          proximity_dominant: !!p.proximity_dominant,
+          explanation: p.rationale || "",
+          user_query: buildCreateIndexUserQuery(indexName),
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const final = await r.json();
+      btn.classList.add("created");
+      btn.innerHTML = "<strong>" + escapeHtml(indexName) + "</strong><p>Created</p>";
+      if (final.reply) appendLog("System", final.reply, "sys");
+      if (final.geojson && final.value_summary) {
+        setIndexLayer(final.index_col, final.value_summary, final.geojson, final.index_name);
+        setSpatialTarget(final.spatial_target_resolved, final.spatial_filter_radius_m, final.spatial_target);
+      } else if (final.index_col) {
+        await loadExistingIndex(final.index_col);
+      }
+      await refreshIndices();
+      window.StreetRAG?.showProgress?.(100, "Index created");
+    } catch (e) {
+      appendLog("Error", String(e.message || e), "err");
+      wrap.querySelectorAll(".proposal-card").forEach((b) => { b.disabled = false; });
+      btn.innerHTML = "<strong>" + escapeHtml(p.name || indexName) + "</strong><p>" + escapeHtml(p.rationale || "") + "</p>";
+    }
+  }
   function appendActivity(line) {
     if (!activity) return;
-    activity.textContent = activity.textContent ? activity.textContent + "\n" + line : line;
+    const div = document.createElement("div");
+    div.className = "act-line";
+    div.textContent = line;
+    activity.appendChild(div);
     activity.scrollTop = activity.scrollHeight;
   }
   function appendLog(role, text, cssClass) {
@@ -361,7 +496,7 @@
         if (b) map.fitBounds(b, { padding: 40, maxZoom: 12 });
       }
     } catch (e) {
-      appendLog("错误", "无法加载路网: " + e, "err");
+      appendLog("Error", "Failed to load network: " + e, "err");
     }
   }
 
@@ -383,23 +518,47 @@
   }
 
   function setIndexLayer(col, summary, geojson, indexName) {
-    if (map.getLayer("index-lines")) map.removeLayer("index-lines");
-    if (map.getSource("index")) map.removeSource("index");
     if (!geojson || !geojson.features || !geojson.features.length) {
       hideColorbar();
+      appendLog("Error", `No map data for column: ${col}`, "err");
       return;
     }
     const [lo, hi] = stretchRange(summary);
-    lastIndex = { col, summary, vmin: lo, vmax: hi, indexName };
-    map.addSource("index", { type: "geojson", data: geojson });
-    map.addLayer({
-      id: "index-lines", type: "line", source: "index",
-      paint: paintForIndex(lo, hi, getMode()),
-    });
-    showColorbar(col, summary, indexName);
+    lastIndex = { col, summary, vmin: lo, vmax: hi, indexName: indexName || col };
+    const paint = paintForIndex(lo, hi, getMode());
+    if (map.getSource("index")) {
+      map.getSource("index").setData(geojson);
+    } else {
+      map.addSource("index", { type: "geojson", data: geojson });
+    }
+    if (!map.getLayer("index-lines")) {
+      map.addLayer({ id: "index-lines", type: "line", source: "index", paint });
+    } else {
+      map.setPaintProperty("index-lines", "line-color", paint["line-color"]);
+      map.setPaintProperty("index-lines", "line-width", paint["line-width"]);
+      map.setPaintProperty("index-lines", "line-opacity", paint["line-opacity"]);
+    }
+    showColorbar(col, summary, indexName || col);
     updateHashIndex(col);
-    const b = computeBounds(geojson);
-    if (b) map.fitBounds(b, { padding: 32, maxZoom: 12 });
+  }
+
+  async function visualizeColumn(col, indexName) {
+    if (!col) return;
+    try {
+      appendLog("System", `Loading map layer: ${col}…`, "sys");
+      const r = await fetch(
+        apiPath("/api/edges-geojson?color_by=" + encodeURIComponent(col) + "&simplify=8")
+      );
+      if (!r.ok) {
+        const err = await r.text();
+        appendLog("Error", `Cannot map ${col}: ${err}`, "err");
+        return;
+      }
+      const data = await r.json();
+      setIndexLayer(col, data.value_summary || {}, data.geojson, indexName || col);
+    } catch (e) {
+      appendLog("Error", `Map failed: ${e.message || e}`, "err");
+    }
   }
 
   // -------------------------------------------------------------------
@@ -481,7 +640,7 @@
       });
       map.fitBounds([[x0, y0], [x1, y1]], { padding: 48, maxZoom: 14 });
     }
-    if (note) appendLog("系统", "权重：" + note, "sys");
+    if (note) appendLog("System", "Weight: " + note, "sys");
   }
 
   // -------------------------------------------------------------------
@@ -510,7 +669,7 @@
           html += `<div class="popup-row"><span class="k">length</span><span class="v">${Number(info.length).toFixed(0)} m</span></div>`;
         }
         if (info.top_features && info.top_features.length) {
-          html += `<div class="popup-mini">主要贡献：<ul>`;
+          html += `<div class="popup-mini">Top contributions:<ul>`;
           for (const t of info.top_features.slice(0, 3)) {
             html += `<li>${escapeHtml(t.feature)} · w=${fmtNum(t.weight)} · x=${fmtNum(t.raw_value)}</li>`;
           }
@@ -557,7 +716,7 @@
     if (!routeMode.from) {
       routeMode.from = [lng, lat];
       routeMode.fromMarker = new maplibregl.Marker({ color: "#16a34a" }).setLngLat([lng, lat]).addTo(map);
-      appendLog("路径", `起点：${lng.toFixed(5)}, ${lat.toFixed(5)}`, "sys");
+      appendLog("Route", `Start: ${lng.toFixed(5)}, ${lat.toFixed(5)}`, "sys");
       return;
     }
     const [flon, flat] = routeMode.from;
@@ -576,9 +735,9 @@
       if (!res.ok) throw new Error(await res.text());
       const d = await res.json();
       setRouteLayer(d.geojson, d.weight_note);
-      appendLog("系统", `路径 ~${Math.round(d.length_m)} m （权重：${d.weight_note}）`, "sys");
+      appendLog("System", `Route ~${Math.round(d.length_m)} m （Weight: ${d.weight_note}）`, "sys");
     } catch (err) {
-      appendLog("错误", String(err.message || err), "err");
+      appendLog("Error", String(err.message || err), "err");
     } finally {
       setRouteModeActive(false);
     }
@@ -594,19 +753,19 @@
       const d = await r.json();
       renderIndicesList(d.indices || []);
       // Populate route weight select with index columns
-      const opts = ['<option value="length">length（最短）</option>'];
+      const opts = ['<option value="length">length(shortest)</option>'];
       (d.indices || []).forEach((it) => {
-        opts.push(`<option value="${escapeHtml(it.index_col)}">${escapeHtml(it.index_name || it.index_col)}（最舒适）</option>`);
+        opts.push(`<option value="${escapeHtml(it.index_col)}">${escapeHtml(it.index_name || it.index_col)}(comfort)</option>`);
       });
       routeWeightSelect.innerHTML = opts.join("");
     } catch (e) {
-      indicesList.innerHTML = `<div style="color:#dc2626;font-size:12px;padding:8px;">无法加载: ${escapeHtml(e.message || e)}</div>`;
+      indicesList.innerHTML = `<div style="color:#dc2626;font-size:12px;padding:8px;">Failed to load: ${escapeHtml(e.message || e)}</div>`;
     }
   }
 
   function renderIndicesList(items) {
     if (!items.length) {
-      indicesList.innerHTML = `<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px;">还没有保存的指数。<br/>用下方对话框创建一个吧。</div>`;
+      indicesList.innerHTML = `<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px;">No saved indices yet.<br/>Create one in the chat below.</div>`;
       return;
     }
     indicesList.innerHTML = items.map((it) => {
@@ -614,7 +773,7 @@
       const stats = it.statistics || {};
       const morans = (it.morans_i != null) ? ` · I=${Number(it.morans_i).toFixed(2)}` : "";
       return (
-        `<div class="index-item" data-col="${escapeHtml(it.index_col)}">` +
+        `<div class="index-item index-card" data-col="${escapeHtml(it.index_col)}">` +
           `<div class="name">${escapeHtml(it.index_name || it.index_col)}</div>` +
           `<div class="query">${escapeHtml(it.original_query || "")}</div>` +
           `<div class="meta">${escapeHtml(it.operator || "weighted_sum")} · ${escapeHtml(it.normalization || "robust")} · n=${stats.count != null ? stats.count.toLocaleString() : "?"}${morans} · ${escapeHtml(t)}</div>` +
@@ -638,30 +797,32 @@
       const d = await r.json();
       setIndexLayer(d.index_col, d.value_summary, d.geojson, d.index_name);
       setSpatialTarget(d.spatial_target_resolved, d.spatial_filter_radius_m, d.spatial_target);
-      if (d.reply) appendLog("系统 (已存)", d.reply, "sys");
+      if (d.reply) appendLog("System (saved)", d.reply, "sys");
       if (d.morans_i && d.morans_i.I != null) {
-        appendLog("空间诊断", `Moran's I = ${Number(d.morans_i.I).toFixed(4)} (n=${d.morans_i.n})`, "sys");
+        appendLog("Spatial", `Moran's I = ${Number(d.morans_i.I).toFixed(4)} (n=${d.morans_i.n})`, "sys");
       }
       if (d.spatial_target_resolved && d.spatial_target_resolved.found) {
-        const r2 = d.spatial_filter_radius_m ? ` · 半径 ${Number(d.spatial_filter_radius_m).toFixed(0)} m` : "";
-        appendLog("空间目标", `${d.spatial_target} → ${d.spatial_target_resolved.display_name || ""}${r2}`, "sys");
+        const r2 = d.spatial_filter_radius_m ? ` · radius ${Number(d.spatial_filter_radius_m).toFixed(0)} m` : "";
+        appendLog("Target", `${d.spatial_target} → ${d.spatial_target_resolved.display_name || ""}${r2}`, "sys");
       }
     } catch (e) {
-      appendLog("错误", "加载指数失败: " + (e.message || e), "err");
+      appendLog("Error", "Failed to load index: " + (e.message || e), "err");
     }
   }
 
   // Result card for analysis-only skills (correlate, multiscale_profile…)
   // that return numbers + text instead of a map layer.
-  const SKILL_NAMES_ZH = {
-    correlate: "相关性分析",
-    multiscale_profile: "多尺度剖面",
-    cluster_lisa: "空间聚类 (LISA)",
-    composite_index: "复合指数",
+  const SKILL_NAMES = {
+    correlate: "Correlation",
+    multiscale_profile: "Multiscale profile",
+    cluster_lisa: "LISA clusters",
+    composite_index: "Composite index",
+    poi_review_search: "Review search",
+    answer_directly: "Direct answer",
   };
   function renderAnalysisResult(d, opts) {
     const o = opts || {};
-    const title = SKILL_NAMES_ZH[d.skill_name] || d.skill_name || "分析";
+    const title = SKILL_NAMES[d.skill_name] || d.skill_name || "Analysis";
     if (d.reply && !o.skipReply) appendLog(title, d.reply, "sys");
     const ev = d.narrative_evidence || {};
     const lines = [];
@@ -703,7 +864,16 @@
              : (d.morans_i && d.morans_i.I != null) ? d.morans_i : null;
     if (mi) lines.push(`Moran's I = ${Number(mi.I).toFixed(4)} (n=${mi.n})`);
 
-    if (lines.length) appendLog("证据", lines.join("\n"), "sys");
+    // poi_review_search
+    if (ev.review_snippets && ev.review_snippets.length) {
+      for (const s of ev.review_snippets.slice(0, 5)) {
+        const name = s.poi_name || s.poi_id || "POI";
+        const text = (s.text || "").slice(0, 120);
+        lines.push(`「${name}」: ${text}${text.length >= 120 ? "…" : ""}`);
+      }
+    }
+
+    if (lines.length) appendLog("Evidence", lines.join("\n"), "sys");
   }
 
   refreshIndicesBtn.addEventListener("click", refreshIndices);
@@ -747,12 +917,12 @@
   // -------------------------------------------------------------------
   exportBtn.addEventListener("click", async () => {
     if (!lastIndex) {
-      appendLog("系统", "请先选择或创建一个指数再导出。", "sys");
+      appendLog("System", "Select or create an index before exporting.", "sys");
       return;
     }
     const r = await fetch(apiPath(`/api/edges-geojson?color_by=${encodeURIComponent(lastIndex.col)}&simplify=4`));
     if (!r.ok) {
-      appendLog("错误", "导出失败: " + await r.text(), "err");
+      appendLog("Error", "Export failed: " + await r.text(), "err");
       return;
     }
     const d = await r.json();
@@ -770,75 +940,523 @@
   // -------------------------------------------------------------------
   const datasetsBox = document.getElementById("datasetsBox");
   const rescanBtn = document.getElementById("rescanBtn");
+  const addCityBtn = document.getElementById("addCityBtn");
+  const addCityModal = document.getElementById("addCityModal");
+  const syntaxCityBtn = document.getElementById("syntaxCityBtn");
+  const syntaxModal = document.getElementById("syntaxModal");
+  const apiSettingsBtn = document.getElementById("apiSettingsBtn");
+  const apiModal = document.getElementById("apiModal");
   const DS_BADGES = {
-    network_active: ["net", "当前网络"],
-    network_candidate: ["cand", "备选网络"],
-    integrated: ["ok", "已整合"],
-    converted: ["conv", "已转换"],
-    not_integrated: ["no", "未整合"],
+    network_active: ["net", "Active network"],
+    network_candidate: ["cand", "Candidate"],
+    integrated: ["ok", "Integrated"],
+    pending_integration: ["warn", "Pending"],
+    partial_integration: ["warn", "Partial"],
+    converted: ["conv", "Converted"],
+    not_integrated: ["no", "Not integrated"],
+    text_only: ["txt", "Text indexed"],
   };
 
   const citySelect = document.getElementById("citySelect");
 
   function dsFileRow(f) {
     const [cls, label] = DS_BADGES[f.role] || ["no", f.role];
-    const size = f.size_mb != null ? ` <span style="color:var(--muted)">${f.size_mb}MB</span>` : "";
-    const missing = f.missing ? `<span class="ds-badge miss">文件缺失</span>` : "";
-    let html = `<div class="ds-file"><span class="fname">${escapeHtml(f.name)}</span>${size}` +
-      `<span class="ds-badge ${cls}">${label}${f.role === "integrated" && f.columns ? " " + f.columns.length + "列" : ""}</span>${missing}`;
-    if (f.method) html += `<span style="color:var(--muted)">${escapeHtml(f.method)}</span>`;
-    if (f.note) html += `<span style="color:var(--muted)">${escapeHtml(f.note)}</span>`;
+    const metaParts = [];
+    if (f.method) metaParts.push(f.method);
+    if (f.size_mb != null) metaParts.push(`${f.size_mb}MB`);
+    const colCount = f.columns?.length || f.columns_in_gpkg || f.registered_columns?.length;
+    if (colCount) metaParts.push(`${colCount} cols`);
+    if (f.note) metaParts.push(f.note);
+    let html = `<div class="feat-row ds-row" data-file="${escapeHtml(f.name)}">` +
+      `<span class="fname">${escapeHtml(f.name)}</span>`;
+    if (f.missing) html += `<span class="ds-badge miss">Missing</span>`;
+    html += `<span class="ds-badge ${cls}">${label}</span>`;
+    if (metaParts.length) {
+      html += `<span class="row-meta">${escapeHtml(metaParts.join(" · "))}</span>`;
+    }
+    if (f.text_columns && f.text_columns.length) {
+      html += `<span class="ds-badge txt">Text ${f.text_columns.length}</span>`;
+    }
+    if (f.text_index) {
+      const ti = f.text_index;
+      html += `<span class="ds-badge ok">Reviews ${ti.n_chunks || 0}</span>`;
+    }
     if (f.columns && f.columns.length) {
-      html += `<details class="ds-cols"><summary>查看 ${f.columns.length} 个特征列</summary>` +
+      html += `<details class="ds-cols" style="flex:1 1 100%;"><summary>${f.columns.length} feature columns</summary>` +
         `<div class="cols">${f.columns.map(escapeHtml).join("<br/>")}</div></details>`;
     }
+    if (f.text_index?.text_columns?.length) {
+      html += `<details class="ds-cols" style="flex:1 1 100%;"><summary>Text columns</summary>` +
+        `<div class="cols">${f.text_index.text_columns.map(escapeHtml).join("<br/>")}</div></details>`;
+    }
+    if (f.role !== "network_active" && f.role !== "network_candidate" && !f.missing) {
+      html += `<div class="feat-actions">` +
+        `<button type="button" class="btn-sm ds-integrate" data-file="${escapeHtml(f.name)}">Integrate</button>` +
+        `<button type="button" class="btn-sm ds-reintegrate" data-file="${escapeHtml(f.name)}">Reload</button>` +
+        `<button type="button" class="btn-sm ds-delete" data-file="${escapeHtml(f.name)}">Delete</button>` +
+        `<button type="button" class="btn-sm ds-addctx" data-file="${escapeHtml(f.name)}">+ Chat</button>` +
+        `</div>`;
+    }
     return html + `</div>`;
+  }
+
+  function bindDatasetActions(root) {
+    if (!root) return;
+    root.querySelectorAll(".ds-integrate").forEach((btn) => {
+      btn.addEventListener("click", () => runFileIntegrate(btn.dataset.file, false));
+    });
+    root.querySelectorAll(".ds-reintegrate").forEach((btn) => {
+      btn.addEventListener("click", () => runFileIntegrate(btn.dataset.file, true));
+    });
+    root.querySelectorAll(".ds-delete").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Delete " + btn.dataset.file + "?")) return;
+        const r = await fetch(apiPath("/api/files/" + encodeURIComponent(btn.dataset.file)), { method: "DELETE" });
+        if (!r.ok) { appendLog("Error", await r.text(), "err"); return; }
+        refreshDatasets();
+      });
+    });
+    root.querySelectorAll(".ds-addctx").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        window.StreetRAG?.addContext?.({ type: "file", name: btn.dataset.file });
+      });
+    });
+  }
+
+  function formatIntegrateProgress(ev) {
+    const d = ev.detail || {};
+    if (d.message) return d.message;
+    const parts = [d.phase || "integrate"];
+    if (d.current != null && d.total != null) parts.push(`${d.current}/${d.total}`);
+    if (d.pct != null) parts.push(`${Math.round(d.pct)}%`);
+    return parts.join(" · ");
+  }
+
+  function setIntegrateButtonsDisabled(disabled) {
+    document.querySelectorAll(".ds-integrate, .ds-reintegrate").forEach((btn) => {
+      btn.disabled = disabled;
+      btn.style.opacity = disabled ? "0.5" : "";
+    });
+  }
+
+  async function runFileIntegrate(filename, reintegrate) {
+    const url = apiPath("/api/files/" + encodeURIComponent(filename) + (reintegrate ? "/reintegrate-stream" : "/integrate-stream"));
+    const action = reintegrate ? "Reintegrating" : "Integrating";
+    appendLog("System", `${action} ${filename}… (this may take several minutes for large POI datasets)`, "sys");
+    setIntegrateButtonsDisabled(true);
+    window.StreetRAG?.showProgress?.(2, `${action} ${filename}…`);
+    try {
+      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (!res.ok) throw new Error(await res.text());
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const p = parseSseBuffer(buf);
+        buf = p.rest;
+        for (const ev of p.events) {
+          if (ev.type === "progress" && ev.detail) {
+            const msg = formatIntegrateProgress(ev);
+            const pct = ev.detail.pct ?? 50;
+            window.StreetRAG?.showProgress?.(pct, msg);
+          } else if (ev.type === "error") throw new Error(ev.message);
+          else if (ev.type === "result") {
+            const cols = ev.data?.columns_added || [];
+            appendLog("System", `Integration done: ${cols.length} columns`, "sys");
+          }
+        }
+      }
+      window.StreetRAG?.hideProgress?.();
+      refreshDatasets();
+      window.refreshFeatures?.();
+    } catch (e) {
+      appendLog("Error", String(e.message || e), "err");
+      window.StreetRAG?.hideProgress?.();
+    } finally {
+      setIntegrateButtonsDisabled(false);
+    }
+  }
+
+  function renderDatasetsHtml(d) {
+    const net = d.network || {};
+    const fc = d.feature_counts || {};
+    let html = "";
+    if (d.data_dir) {
+      html += `<div class="ds-note" style="margin-top:0;border:0;padding:0;">📁 ${escapeHtml(d.data_dir)}</div>`;
+    }
+    html += `<div class="ds-net">${escapeHtml(net.file || "No network set")}` +
+      (net.n_edges ? ` · ${Number(net.n_edges).toLocaleString()} edges` : "") +
+      (net.syntax_radii && net.syntax_radii.length ? ` · syntax radii ${net.syntax_radii.join("/")}m` : "") +
+      `</div>`;
+    html += `<div class="ds-counts">Features ${fc.total ?? "?"}: syntax ${fc.space_syntax ?? 0} · integrated ${fc.integrated ?? 0} · Composite index ${fc.composite_index ?? 0}` +
+      (fc.review_chunks ? ` · reviews ${fc.review_chunks}` : "") + `</div>`;
+    if (net.syntax_radii && net.syntax_radii.length) {
+      const synNote = (fc.space_syntax || 0) > 0
+        ? `Syntax computed (${fc.space_syntax} cols)`
+        : `Syntax radii ${net.syntax_radii.join("/")}m set, not computed — click Syntax`;
+      html += `<div class="ds-note" style="margin-top:4px;">${escapeHtml(synNote)}</div>`;
+    }
+    if (!d.ready) {
+      html += `<div class="ds-note">City not ready. Use + City to download a network.</div>`;
+      return html;
+    }
+    if ((d.networks || []).length) {
+      html += `<div class="feat-group"><div class="ds-group">Street network</div>`;
+      for (const f of d.networks) html += dsFileRow(f);
+      html += `</div>`;
+    }
+    const groups = [
+      [`Integrated sources`, (d.sources || []).filter((f) => f.role === "integrated" || f.role === "partial_integration")],
+      [`Pending integration`, (d.sources || []).filter((f) => f.role === "pending_integration")],
+      ["Text indexed only", (d.sources || []).filter((f) => f.role === "text_only")],
+      ["Converted", (d.sources || []).filter((f) => f.role === "converted")],
+      ["Not integrated", (d.sources || []).filter((f) => f.role === "not_integrated")],
+    ];
+    for (const [title, items] of groups) {
+      if (!items.length) continue;
+      html += `<div class="feat-group"><div class="ds-group">${title} (${items.length})</div>`;
+      for (const f of items) html += dsFileRow(f);
+      html += `</div>`;
+    }
+    if (d.multi_city_note) {
+      html += `<div class="ds-note">${escapeHtml(d.multi_city_note)}</div>`;
+    }
+    return html;
+  }
+
+  function populateCitySelect(d) {
+    if (!citySelect) return;
+    const details = d.city_details || (d.cities || []).map((n) => ({ name: n }));
+    citySelect.innerHTML = details.map((c) => {
+      const name = typeof c === "string" ? c : c.name;
+      let meta = "";
+      if (typeof c === "object") {
+        const syn = c.n_syntax ? ` · syntax${c.n_syntax}` : "";
+        meta = c.network ? ` (${c.n_features || 0} feat${syn})` : "";
+      }
+      return `<option value="${escapeHtml(name)}"${name === d.city ? " selected" : ""}>🏙 ${escapeHtml(name)}${escapeHtml(meta)}</option>`;
+    }).join("");
+  }
+
+  async function fetchDatasets() {
+    const r = await fetch(apiPath("/api/datasets"));
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
   }
 
   async function refreshDatasets() {
     if (!datasetsBox) return;
     try {
-      const r = await fetch(apiPath("/api/datasets"));
-      if (!r.ok) throw new Error(await r.text());
-      const d = await r.json();
-      const net = d.network || {};
-      const fc = d.feature_counts || {};
-
-      if (citySelect) {
-        citySelect.innerHTML = (d.cities || []).map((c) =>
-          `<option value="${escapeHtml(c)}"${c === d.city ? " selected" : ""}>🏙 ${escapeHtml(c)}</option>`
-        ).join("");
-      }
-
-      let html = "";
-      html += `<div class="ds-net">${escapeHtml(net.file || "未设置网络")}` +
-        (net.n_edges ? ` · ${Number(net.n_edges).toLocaleString()} 边` : "") +
-        (net.syntax_radii && net.syntax_radii.length ? ` · 句法半径 ${net.syntax_radii.join("/")}m` : "") +
-        `</div>`;
-      html += `<div class="ds-counts">特征共 ${fc.total ?? "?"}：句法 ${fc.space_syntax ?? 0} · 外部整合 ${fc.integrated ?? 0} · 复合指数 ${fc.composite_index ?? 0}</div>`;
-
-      if ((d.networks || []).length) {
-        html += `<div class="ds-group">街道网络</div>`;
-        for (const f of d.networks) html += dsFileRow(f);
-      }
-      const groups = [
-        ["已整合数据源", (d.sources || []).filter((f) => f.role === "integrated")],
-        ["已转换", (d.sources || []).filter((f) => f.role === "converted")],
-        ["未整合", (d.sources || []).filter((f) => f.role === "not_integrated")],
-      ];
-      for (const [title, items] of groups) {
-        if (!items.length) continue;
-        html += `<div class="ds-group">${title} (${items.length})</div>`;
-        for (const f of items) html += dsFileRow(f);
-      }
-      if (d.multi_city_note) {
-        html += `<div class="ds-note">${escapeHtml(d.multi_city_note)}</div>`;
-      }
-      datasetsBox.innerHTML = html;
+      const d = await fetchDatasets();
+      populateCitySelect(d);
+      datasetsBox.innerHTML = renderDatasetsHtml(d);
+      bindDatasetActions(datasetsBox);
     } catch (e) {
-      datasetsBox.innerHTML = `<span style="color:#dc2626">无法加载: ${escapeHtml(e.message || String(e))}</span>`;
+      datasetsBox.innerHTML = `<span style="color:#dc2626">Failed to load: ${escapeHtml(e.message || String(e))}</span>`;
     }
   }
+
+  function openModal(el) {
+    if (!el) return;
+    el.classList.add("open");
+    el.setAttribute("aria-hidden", "false");
+  }
+  function closeModal(el) {
+    if (!el) return;
+    el.classList.remove("open");
+    el.setAttribute("aria-hidden", "true");
+  }
+
+  const CITY_STEP_LABELS = {
+    download: "Download network",
+    pois: "Download POIs",
+    scan: "Scan directory",
+    integrate: "Integrate data",
+    activate: "Activate city",
+    bootstrap: "Bootstrap",
+    syntax: "Space Syntax",
+  };
+
+  async function loadSyntaxConfig() {
+    const r = await fetch(apiPath("/api/syntax/config"));
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
+  async function openSyntaxModal() {
+    const statusEl = document.getElementById("syntaxModalStatus");
+    const radiiEl = document.getElementById("syntaxRadii");
+    const progEl = document.getElementById("syntaxProgress");
+    if (progEl) { progEl.style.display = "none"; progEl.textContent = ""; }
+    openModal(syntaxModal);
+    if (statusEl) statusEl.textContent = "Loading…";
+    try {
+      const cfg = await loadSyntaxConfig();
+      if (radiiEl) radiiEl.value = (cfg.radii || cfg.default_radii || [500, 1500, 4500]).join(",");
+      const title = document.getElementById("syntaxModalTitle");
+      if (title) title.textContent = `Space Syntax · ${cfg.city || "—"}`;
+      if (statusEl) {
+        statusEl.textContent = cfg.has_syntax
+          ? `Computed ${cfg.syntax_columns} syntax columns · radii ${(cfg.radii || []).join("/")} m`
+          : `Syntax not computed · radii configured ${(cfg.radii || []).join("/")} m`;
+      }
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "Failed to load: " + (e.message || e);
+    }
+  }
+
+  async function submitRunSyntax() {
+    const radiiEl = document.getElementById("syntaxRadii");
+    const progEl = document.getElementById("syntaxProgress");
+    const runBtn = document.getElementById("syntaxRunBtn");
+    const radii = (radiiEl && radiiEl.value || "").trim();
+    if (runBtn) runBtn.disabled = true;
+    if (progEl) { progEl.style.display = "block"; progEl.textContent = "Starting syntax…"; }
+    appendLog("System", `Running space syntax: ${radii || "default radii"}`, "sys");
+    clearActivity();
+    try {
+      const r = await fetch(apiPath("/api/syntax/run-stream"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ radii: radii || null }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parsed = parseSseBuffer(buf);
+        buf = parsed.rest;
+        for (const ev of parsed.events) {
+          if (ev.type === "progress") {
+            const msg = (ev.detail && ev.detail.message) || ev.step;
+            appendActivity(msg);
+            if (progEl) progEl.textContent = msg;
+          } else if (ev.type === "error") {
+            throw new Error(ev.message || "Syntax failed");
+          } else if (ev.type === "result") {
+            const n = ev.data && ev.data.syntax_columns;
+            appendLog("System", `Syntax complete${n != null ? `, ${n} columns` : ""}`, "sys");
+          }
+        }
+      }
+      closeModal(syntaxModal);
+      refreshDatasets();
+      await loadBaseStreets();
+      await refreshIndices();
+    } catch (e) {
+      appendLog("Error", "Syntax failed: " + (e.message || e), "err");
+      if (progEl) progEl.textContent = String(e.message || e);
+    } finally {
+      if (runBtn) runBtn.disabled = false;
+    }
+  }
+
+  async function submitAddCity() {
+    const queryEl = document.getElementById("addCityQuery");
+    const slugEl = document.getElementById("addCitySlug");
+    const netEl = document.getElementById("addCityNetwork");
+    const poisEl = document.getElementById("addCityPois");
+    const syntaxEl = document.getElementById("addCitySyntax");
+    const radiiEl = document.getElementById("addCityRadii");
+    const progEl = document.getElementById("addCityProgress");
+    const submitBtn = document.getElementById("addCitySubmit");
+    const q = (queryEl && queryEl.value || "").trim();
+    if (!q) {
+      if (progEl) { progEl.style.display = "block"; progEl.textContent = "Enter OSM place name"; }
+      return;
+    }
+    if (submitBtn) submitBtn.disabled = true;
+    if (progEl) { progEl.style.display = "block"; progEl.textContent = "Starting download…"; }
+    appendLog("System", `Adding city: ${q}`, "sys");
+    clearActivity();
+    try {
+      const r = await fetch(apiPath("/api/cities/add-stream"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          osm_query: q,
+          city_slug: (slugEl && slugEl.value || "").trim() || null,
+          network_type: (netEl && netEl.value) || "drive",
+          with_pois: !!(poisEl && poisEl.checked),
+          run_syntax: !!(syntaxEl && syntaxEl.checked),
+          syntax_radii: (radiiEl && radiiEl.value || "").trim() || "500,1500,4500",
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      let finalCity = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parsed = parseSseBuffer(buf);
+        buf = parsed.rest;
+        for (const ev of parsed.events) {
+          if (ev.type === "progress") {
+            const label = CITY_STEP_LABELS[ev.step] || ev.step;
+            const msg = (ev.detail && ev.detail.message) || label;
+            appendActivity(`${label}: ${msg}`);
+            if (progEl) progEl.textContent = `${label} — ${msg}`;
+          } else if (ev.type === "error") {
+            throw new Error(ev.message || "Add failed");
+          } else if (ev.type === "result") {
+            finalCity = ev.data && ev.data.city;
+          }
+        }
+      }
+      closeModal(addCityModal);
+      appendLog("System", `City ${finalCity || q} added and activated`, "sys");
+      location.reload();
+    } catch (e) {
+      appendLog("Error", "Failed to add city: " + (e.message || e), "err");
+      if (progEl) progEl.textContent = String(e.message || e);
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+
+  if (addCityBtn) addCityBtn.addEventListener("click", () => {
+    const progEl = document.getElementById("addCityProgress");
+    if (progEl) { progEl.style.display = "none"; progEl.textContent = ""; }
+    openModal(addCityModal);
+  });
+  ["addCityModalClose", "addCityCancel"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("click", () => closeModal(addCityModal));
+  });
+  if (addCityModal) {
+    addCityModal.addEventListener("click", (e) => {
+      if (e.target === addCityModal) closeModal(addCityModal);
+    });
+  }
+  const addCitySubmit = document.getElementById("addCitySubmit");
+  if (addCitySubmit) addCitySubmit.addEventListener("click", submitAddCity);
+
+  if (syntaxCityBtn) syntaxCityBtn.addEventListener("click", openSyntaxModal);
+  ["syntaxModalClose", "syntaxModalCancel"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("click", () => closeModal(syntaxModal));
+  });
+  if (syntaxModal) {
+    syntaxModal.addEventListener("click", (e) => {
+      if (e.target === syntaxModal) closeModal(syntaxModal);
+    });
+  }
+  const syntaxRunBtn = document.getElementById("syntaxRunBtn");
+  if (syntaxRunBtn) syntaxRunBtn.addEventListener("click", submitRunSyntax);
+
+  async function refreshApiButtonStatus() {
+    if (!apiSettingsBtn) return;
+    try {
+      const r = await fetch(apiPath("/api/settings"));
+      if (!r.ok) return;
+      const d = await r.json();
+      apiSettingsBtn.textContent = d.configured ? "API ✓" : "API";
+      apiSettingsBtn.title = d.configured
+        ? `API configured (${d.source}: ${d.masked_key})`
+        : "OpenAI API not set — click to configure";
+      apiSettingsBtn.style.borderColor = d.configured ? "#15803d" : "#b91c1c";
+      apiSettingsBtn.style.color = d.configured ? "#15803d" : "#b91c1c";
+    } catch (_) {}
+  }
+
+  async function openApiModal() {
+    const statusEl = document.getElementById("apiModalStatus");
+    const keyEl = document.getElementById("apiKeyInput");
+    const llmEl = document.getElementById("llmModelInput");
+    const embEl = document.getElementById("embedModelInput");
+    const progEl = document.getElementById("apiSaveProgress");
+    if (progEl) { progEl.style.display = "none"; progEl.textContent = ""; }
+    if (keyEl) keyEl.value = "";
+    openModal(apiModal);
+    if (statusEl) statusEl.textContent = "Loading…";
+    try {
+      const d = await (await fetch(apiPath("/api/settings"))).json();
+      if (llmEl) llmEl.value = d.llm_model || "gpt-4o";
+      if (embEl) embEl.value = d.embedding_model || "text-embedding-3-small";
+      if (statusEl) {
+        if (d.configured) {
+          statusEl.textContent = `Configured · source ${d.source}${d.masked_key ? " · " + d.masked_key : ""}`
+            + (d.note_env_overrides_local ? " (OPENAI_API_KEY env overrides local file)" : "");
+        } else {
+          statusEl.textContent = "API key not set. Save to enable chat and embedding retrieval.";
+        }
+      }
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "Failed to load: " + (e.message || e);
+    }
+  }
+
+  async function saveApiSettings(clearKey) {
+    const keyEl = document.getElementById("apiKeyInput");
+    const llmEl = document.getElementById("llmModelInput");
+    const embEl = document.getElementById("embedModelInput");
+    const progEl = document.getElementById("apiSaveProgress");
+    const saveBtn = document.getElementById("apiSaveBtn");
+    if (saveBtn) saveBtn.disabled = true;
+    if (progEl) { progEl.style.display = "block"; progEl.textContent = "Saving…"; }
+    try {
+      const body = {
+        llm_model: (llmEl && llmEl.value || "").trim(),
+        embedding_model: (embEl && embEl.value || "").trim(),
+        clear_api_key: !!clearKey,
+      };
+      if (!clearKey && keyEl && keyEl.value.trim()) {
+        body.openai_api_key = keyEl.value.trim();
+      } else if (!clearKey) {
+        body.openai_api_key = "";
+      }
+      const r = await fetch(apiPath("/api/settings"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const d = await r.json();
+      appendLog("System", clearKey ? "Cleared local API key" : "API settings saved", "sys");
+      if (progEl) {
+        progEl.textContent = d.configured
+          ? `Configured (${d.source}${d.masked_key ? ": " + d.masked_key : ""})`
+          : "API key not configured";
+      }
+      await refreshApiButtonStatus();
+      if (!clearKey) closeModal(apiModal);
+    } catch (e) {
+      appendLog("Error", "Failed to save API settings: " + (e.message || e), "err");
+      if (progEl) progEl.textContent = String(e.message || e);
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  if (apiSettingsBtn) apiSettingsBtn.addEventListener("click", openApiModal);
+  ["apiModalClose", "apiModalCancel"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("click", () => closeModal(apiModal));
+  });
+  if (apiModal) {
+    apiModal.addEventListener("click", (e) => {
+      if (e.target === apiModal) closeModal(apiModal);
+    });
+  }
+  const apiSaveBtn = document.getElementById("apiSaveBtn");
+  if (apiSaveBtn) apiSaveBtn.addEventListener("click", () => saveApiSettings(false));
+  const apiClearKeyBtn = document.getElementById("apiClearKeyBtn");
+  if (apiClearKeyBtn) {
+    apiClearKeyBtn.addEventListener("click", () => {
+      if (confirm("Clear locally saved API key?")) saveApiSettings(true);
+    });
+  }
+  refreshApiButtonStatus();
 
   if (citySelect) {
     citySelect.addEventListener("change", async () => {
@@ -850,9 +1468,9 @@
           body: JSON.stringify({ name }),
         });
         if (!r.ok) throw new Error(await r.text());
-        location.reload();  // base layer, indices, datasets all change with the city
+        location.reload();
       } catch (e) {
-        appendLog("错误", "切换城市失败: " + (e.message || e), "err");
+        appendLog("Error", "Failed to switch city: " + (e.message || e), "err");
       }
     });
   }
@@ -860,13 +1478,13 @@
   if (rescanBtn) {
     rescanBtn.addEventListener("click", async () => {
       rescanBtn.disabled = true;
-      datasetsBox.textContent = "扫描中…";
+      datasetsBox.textContent = "Scanning…";
       try {
         const r = await fetch(apiPath("/api/scan"), { method: "POST" });
         if (!r.ok) throw new Error(await r.text());
-        appendLog("系统", "数据目录重新扫描完成", "sys");
+        appendLog("System", "Data directory rescanned", "sys");
       } catch (e) {
-        appendLog("错误", "扫描失败: " + (e.message || e), "err");
+        appendLog("Error", "Scan failed: " + (e.message || e), "err");
       } finally {
         rescanBtn.disabled = false;
         refreshDatasets();
@@ -887,7 +1505,7 @@
     uploadBtn.addEventListener("click", async () => {
       const file = uploadInput.files && uploadInput.files[0];
       if (!file) {
-        appendLog("系统", "请先选择文件", "err");
+        appendLog("System", "Select a file first", "err");
         return;
       }
       uploadBtn.disabled = true;
@@ -900,7 +1518,10 @@
         if (upData.suggested_method && integratorSelect) {
           integratorSelect.value = upData.suggested_method;
         }
-        appendLog("系统", `已上传 ${upData.filename} (${upData.geometry_type})`, "sys");
+        appendLog("System", `Uploaded ${upData.filename} (${upData.geometry_type})`, "sys");
+        if (upData.text_detected_message) {
+          appendLog("System", upData.text_detected_message, "sys");
+        }
         const method = (integratorSelect && integratorSelect.value) || upData.suggested_method || "snap_nearest";
         const ig = await fetch(apiPath("/api/integrate"), {
           method: "POST",
@@ -909,10 +1530,14 @@
         });
         if (!ig.ok) throw new Error(await ig.text());
         const igData = await ig.json();
-        appendLog("系统", `集成完成: ${(igData.columns_added || []).join(", ")}`, "sys");
+        let msg = `Integration done: ${(igData.columns_added || []).join(", ") || "(no numeric columns)"}`;
+        if (igData.n_review_records || igData.n_chunks) {
+          msg += ` · review index ${igData.n_chunks || igData.n_review_records} chunks`;
+        }
+        appendLog("System", msg, "sys");
         refreshDatasets();
       } catch (err) {
-        appendLog("错误", String(err.message || err), "err");
+        appendLog("Error", String(err.message || err), "err");
       } finally {
         uploadBtn.disabled = false;
       }
@@ -922,6 +1547,16 @@
   // -------------------------------------------------------------------
   // Chat
   // -------------------------------------------------------------------
+  function pushChatHistory(role, content) {
+    const c = (content || "").trim();
+    if (!c) return;
+    window.__streetHistory = window.__streetHistory || [];
+    window.__streetHistory.push({ role, content: c });
+    if (window.__streetHistory.length > 24) {
+      window.__streetHistory = window.__streetHistory.slice(-24);
+    }
+  }
+
   function parseSseBuffer(buf) {
     const events = [];
     let rest = buf;
@@ -940,20 +1575,28 @@
     e.preventDefault();
     const text = (input.value || "").trim();
     if (!text) return;
+    window.__lastUserQuery = text;
     input.value = "";
     goBtn.disabled = true;
     clearActivity();
-    appendLog("你", text, "you");
+    appendLog("You", text, "you");
+    pushChatHistory("user", text);
     const t0 = Date.now();
+    let sawProposals = false;
 
     try {
       const res = await fetch(apiPath("/api/chat-stream"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, run_route_on_coords: true }),
+        body: JSON.stringify({
+          message: text,
+          run_route_on_coords: true,
+          context: window.StreetRAG?.getContext?.() || [],
+          history: window.StreetRAG?.getHistory?.() || [],
+        }),
       });
       if (!res.ok) throw new Error(await res.text());
-      if (!res.body) throw new Error("无响应体");
+      if (!res.body) throw new Error("Empty response body");
 
       const reader = res.body.getReader();
       const dec = new TextDecoder();
@@ -968,7 +1611,7 @@
               try {
                 const ev = JSON.parse(tail.slice(6));
                 if (ev.type === "result" && ev.data) final = ev.data;
-                if (ev.type === "error") appendLog("系统", "错误: " + (ev.message || ""), "err");
+                if (ev.type === "error") appendLog("System", "Error: " + (ev.message || ""), "err");
               } catch (_) {}
             }
           }
@@ -978,11 +1621,37 @@
         const p = parseSseBuffer(buffer);
         buffer = p.rest;
         for (const ev of p.events) {
-          if (ev.type === "progress") {
+          if (ev.type === "text_delta") {
+            appendStreamText(ev.delta || "");
+          } else if (ev.type === "thinking_delta") {
+            appendThinking(ev.delta || "");
+          } else if (ev.type === "tool_use") {
+            if (ev.name !== "propose_index_options") {
+              appendToolCard(ev.name, ev.arguments, "running");
+            }
+          } else if (ev.type === "tool_result") {
+            if (ev.name !== "propose_index_options") {
+              appendToolCard(ev.name, ev.result, "done");
+            }
+          } else if (ev.type === "visualize" && ev.column) {
+            visualizeColumn(ev.column, ev.index_name);
+          } else if (ev.type === "table") {
+            window.StreetRAG?.showTable?.(ev);
+          } else if (ev.type === "proposals") {
+            sawProposals = true;
+            if (streamBubble) {
+              streamBubble.remove();
+              streamBubble = null;
+            }
+            appendProposals(ev.proposals || []);
+          } else if (ev.type === "progress") {
             appendActivity("· " + formatProgress(ev));
+            if (ev.detail && ev.detail.pct != null) {
+              window.StreetRAG?.showProgress?.(ev.detail.pct, ev.detail.message || ev.step);
+            }
           } else if (ev.type === "error") {
-            appendActivity("错误: " + (ev.message || JSON.stringify(ev)));
-            appendLog("系统", "错误: " + (ev.message || ""), "err");
+            appendActivity("Error: " + (ev.message || JSON.stringify(ev)));
+            appendLog("System", "Error: " + (ev.message || ""), "err");
             goBtn.disabled = false;
             return;
           } else if (ev.type === "result" && ev.data) {
@@ -991,20 +1660,23 @@
         }
       }
       const ms = Date.now() - t0;
-      appendActivity("— 用时 " + (ms / 1000).toFixed(1) + "s —");
+      appendActivity("— elapsed " + (ms / 1000).toFixed(1) + "s —");
 
       if (final) {
         if (final.mode === "route" && final.ok) {
-          appendLog("系统", final.reply || "", "sys");
+          appendLog("System", final.reply || "", "sys");
           setRouteLayer(final.geojson, final.weight_note);
+        } else if (final.index_col && final.render_map) {
+          appendLog("System", final.reply || "", "sys");
+          await visualizeColumn(final.index_col, final.index_name);
         } else if (final.geojson) {
-          appendLog("系统", final.reply || "", "sys");
+          appendLog("System", final.reply || "", "sys");
           if (final.value_summary) {
             setIndexLayer(final.index_col, final.value_summary, final.geojson, final.index_name);
             setSpatialTarget(final.spatial_target_resolved, final.spatial_filter_radius_m, final.spatial_target);
             if (final.spatial_target_resolved && final.spatial_target_resolved.found) {
-              const r2 = final.spatial_filter_radius_m ? ` · 半径 ${Number(final.spatial_filter_radius_m).toFixed(0)} m` : "";
-              appendLog("空间目标", `${final.spatial_target} → ${final.spatial_target_resolved.display_name || ""}${r2}`, "sys");
+              const r2 = final.spatial_filter_radius_m ? ` · radius ${Number(final.spatial_filter_radius_m).toFixed(0)} m` : "";
+              appendLog("Target", `${final.spatial_target} → ${final.spatial_target_resolved.display_name || ""}${r2}`, "sys");
             } else {
               clearSpatialTarget();
             }
@@ -1015,14 +1687,40 @@
           }
         } else if (final.mode === "analysis") {
           renderAnalysisResult(final);
-        } else {
-          appendLog("系统", final.reply || JSON.stringify(final), "sys");
+        } else if (final.reply && !sawProposals) {
+          appendLog("System", final.reply, "sys");
+        } else if (!sawProposals) {
+          appendLog("System", JSON.stringify(final), "sys");
         }
       }
     } catch (err) {
-      appendLog("错误", String(err.message || err), "err");
+      appendLog("Error", String(err.message || err), "err");
     } finally {
+      const assistantReply = ((final && final.reply) || (streamBubble && streamBubble.textContent) || "").trim();
+      if (assistantReply) pushChatHistory("assistant", assistantReply);
       goBtn.disabled = false;
+      streamBubble = null;
+      thinkDetails = null;
     }
   });
+
+  window.StreetRAG = {
+    getContext: () => (window.__streetContext || []),
+    setContext: (ctx) => { window.__streetContext = ctx; },
+    addContext: (item) => {
+      window.__streetContext = window.__streetContext || [];
+      if (!window.__streetContext.some((c) => c.type === item.type && c.name === item.name)) {
+        window.__streetContext.push(item);
+        window.dispatchEvent(new CustomEvent("street-context", { detail: window.__streetContext }));
+      }
+    },
+    getHistory: () => (window.__streetHistory || []),
+    getLastUserQuery: () => window.__lastUserQuery || "",
+    visualizeColumn,
+    refreshDatasets,
+    refreshIndices,
+    showTable: (ev) => {},
+    showProgress: (pct, msg) => {},
+    hideProgress: () => {},
+  };
 })();

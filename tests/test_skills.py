@@ -12,6 +12,8 @@ def test_skill_registry():
     assert "composite_index" in names
     assert "multiscale_profile" in names
     assert "correlate" in names
+    assert "poi_review_search" in names
+    assert "answer_directly" in names
 
 
 def test_correlate_skill(synthetic_network):

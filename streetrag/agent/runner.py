@@ -10,6 +10,7 @@ from pydantic import ValidationError as PydanticValidationError
 from streetrag.core.feature_catalog import FeatureCatalog
 from streetrag.core.street_network import StreetNetwork
 from streetrag.llm.client import chat_text, chat_tools, load_rag_settings, resolve_api_key
+from streetrag.llm.language import language_lock_instruction
 from streetrag.llm.retrieval import (
     IndexPlan,
     build_planner_context,
@@ -32,11 +33,12 @@ def _ensure_skills_registered() -> None:
     register_all_skills()
 
 
-def _build_agent_system() -> str:
+def _build_agent_system(user_query: str) -> str:
     # Routing guide is assembled from skill manifests so new skills are
     # picked up without editing this prompt.
     lines = [
         "You are StreetRAG, an urban street analysis agent.",
+        language_lock_instruction(user_query),
         "Choose exactly ONE skill (tool) that best answers the user's question,",
         "then fill its parameters carefully following the supplied rules.",
         "Available skills:",
@@ -46,6 +48,13 @@ def _build_agent_system() -> str:
     lines.append(
         "Default to composite_index when the user asks WHERE something is "
         "true on the map (walkability, comfort, vibrancy, proximity)."
+    )
+    lines.append(
+        "Use poi_review_search when the user asks WHY or what people say in reviews/comments."
+    )
+    lines.append(
+        "Use answer_directly for meta questions about data, features, or usage "
+        "when no analysis skill applies."
     )
     return "\n".join(lines)
 
@@ -113,7 +122,7 @@ def run_agent_query(
             tool_result = chat_tools(
                 settings=settings,
                 registry_path=registry_path,
-                system=_build_agent_system(),
+                system=_build_agent_system(user_query),
                 prompt=prompt,
                 tools=tools,
             )
@@ -136,12 +145,23 @@ def run_agent_query(
                     + "\n\nFix the parameters and call the tool again."
                 )
         if last_error is not None:
-            raise RuntimeError(
-                f"Agent could not produce valid parameters after "
-                f"{max_repair} attempts: {last_error}"
+            emit("agent", phase="fallback", error=str(last_error)[:300])
+            fallback_reply = (
+                "I could not run a street analysis for that question with the "
+                "available skills and data. "
+                f"Details: {last_error}. "
+                "Try uploading POI/review data, running streetrag scan && integrate, "
+                "or ask about a specific map metric or review theme."
             )
-        emit("agent", phase="run_skill", skill=skill_name)
-        result = run_skill(skill_name, net, params_dict)
+            from streetrag.skills.answer_directly import AnswerDirectlyParams, AnswerDirectlySkill
+
+            result = AnswerDirectlySkill().run(
+                net,
+                AnswerDirectlyParams(reply=fallback_reply, user_query=user_query),
+            )
+        else:
+            emit("agent", phase="run_skill", skill=skill_name)
+            result = run_skill(skill_name, net, params_dict)
     else:
         emit("plan", phase="llm_start")
         plan = plan_index(

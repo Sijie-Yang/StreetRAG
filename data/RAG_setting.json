@@ -9,7 +9,11 @@
   "top_k": 10,
   "analysis_top_k": 10,
   "feature_retrieval_top_m": 60,
-  "feature_retrieval_method": "embedding",
+  "feature_retrieval_method": "stratified",
+  "feature_retrieval_small_source_max": 20,
+  "feature_retrieval_min_per_source": 2,
+  "feature_retrieval_max_share": 0.4,
+  "feature_retrieval_full_catalog_max": 500,
   "default_route_weight": "length",
   "preferred_crs_epsg": null,
   "colors": {

@@ -12,6 +12,7 @@ import numpy as np
 from pydantic import BaseModel, Field, field_validator
 
 from streetrag.core.feature_catalog import FeatureCatalog
+from streetrag.llm.language import language_lock_instruction
 from streetrag.llm.client import (
     chat_structured,
     cosine_topk,
@@ -69,9 +70,59 @@ def effective_street_rag_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "analysis_top_k": int(settings.get("analysis_top_k", settings.get("top_k", 10))),
         "feature_retrieval_top_m": int(settings.get("feature_retrieval_top_m", 60)),
-        "feature_retrieval_method": settings.get("feature_retrieval_method", "embedding"),
+        "feature_retrieval_method": settings.get("feature_retrieval_method", "stratified"),
+        "feature_retrieval_small_source_max": int(
+            settings.get("feature_retrieval_small_source_max", 20)
+        ),
+        "feature_retrieval_min_per_source": int(
+            settings.get("feature_retrieval_min_per_source", 2)
+        ),
+        "feature_retrieval_max_share": float(
+            settings.get("feature_retrieval_max_share", 0.4)
+        ),
+        "feature_retrieval_full_catalog_max": int(
+            settings.get("feature_retrieval_full_catalog_max", 500)
+        ),
         "preferred_crs_epsg": settings.get("preferred_crs_epsg"),
     }
+
+
+def _is_syntax_feature(feature: dict) -> bool:
+    return (feature.get("name") or "").startswith("integration_R")
+
+
+def _group_by_source(features_info: List[dict]) -> Dict[str, List[dict]]:
+    groups: Dict[str, List[dict]] = {}
+    for f in features_info:
+        src = f.get("source") or "unknown"
+        groups.setdefault(src, []).append(f)
+    return groups
+
+
+def _feature_catalog_excerpt(features_info: List[dict]) -> List[dict]:
+    return [
+        {
+            "name": f.get("name", ""),
+            "source": f.get("source", ""),
+            "range": f.get("range", ""),
+            "description": (f.get("description") or "")[:240],
+        }
+        for f in features_info
+    ]
+
+
+def _group_features_for_planner(features_info: List[dict]) -> List[dict]:
+    """Group retrieved features by source for the LLM planner menu."""
+    groups = _group_by_source(features_info)
+    out: List[dict] = []
+    for source in sorted(groups, key=lambda s: (-len(groups[s]), s)):
+        feats = groups[source]
+        out.append({
+            "source": source,
+            "n_total": len(feats),
+            "features": _feature_catalog_excerpt(feats),
+        })
+    return out
 
 
 def list_features_info(catalog: FeatureCatalog | dict) -> List[dict]:
@@ -162,6 +213,187 @@ def _build_embedding_index(
     return mat
 
 
+def _load_query_embedding(
+    user_query: str,
+    *,
+    registry_path: str,
+    settings: dict,
+) -> Optional[np.ndarray]:
+    try:
+        return embed_texts(
+            settings=settings, registry_path=registry_path, texts=[user_query]
+        )[0]
+    except Exception:
+        return None
+
+
+def _order_features_by_relevance(
+    user_query: str,
+    features_info: List[dict],
+    *,
+    all_features: List[dict],
+    mat: Optional[np.ndarray],
+    q_vec: Optional[np.ndarray],
+    method: str,
+) -> List[dict]:
+    """Return *features_info* ordered best-first for *user_query*."""
+    if not features_info:
+        return []
+    if method == "token" or mat is None or q_vec is None:
+        return _token_rank(user_query, features_info, len(features_info))
+
+    name_to_idx = {f.get("name", ""): i for i, f in enumerate(all_features)}
+    subset: List[dict] = []
+    row_indices: List[int] = []
+    for f in features_info:
+        idx = name_to_idx.get(f.get("name", ""))
+        if idx is not None:
+            subset.append(f)
+            row_indices.append(idx)
+    if not subset:
+        return list(features_info)
+    sub_mat = mat[np.asarray(row_indices, dtype=np.intp)]
+    local_order = cosine_topk(q_vec, sub_mat, k=len(subset))
+    return [subset[i] for i in local_order]
+
+
+def _flat_embedding_rank(
+    user_query: str,
+    features_info: List[dict],
+    top_m: int,
+    *,
+    registry_path: str,
+    settings: dict,
+) -> List[dict]:
+    mat = _load_embedding_index(registry_path, features_info)
+    if mat is None:
+        mat = _build_embedding_index(registry_path, settings, features_info)
+    if mat is None or not mat.size:
+        return _token_rank(user_query, features_info, top_m)
+    q_vec = _load_query_embedding(user_query, registry_path=registry_path, settings=settings)
+    if q_vec is None:
+        return _token_rank(user_query, features_info, top_m)
+    order = cosine_topk(q_vec, mat, k=len(features_info))
+    ranked = [features_info[i] for i in order]
+    integ = [f for f in ranked if _is_syntax_feature(f)]
+    rest = [f for f in ranked if not _is_syntax_feature(f)]
+    budget = max(0, top_m - len(integ))
+    return (integ + rest[:budget])[:top_m]
+
+
+def _stratified_rank(
+    user_query: str,
+    features_info: List[dict],
+    top_m: int,
+    *,
+    registry_path: Optional[str],
+    settings: Optional[dict],
+    rank_method: str = "embedding",
+) -> List[dict]:
+    """Source-balanced retrieval: small families in full, large families capped."""
+    eff = effective_street_rag_settings(settings or {})
+    t_small = eff["feature_retrieval_small_source_max"]
+    k_min = max(1, eff["feature_retrieval_min_per_source"])
+    max_share = max(0.1, min(1.0, eff["feature_retrieval_max_share"]))
+    per_source_cap = max(k_min, int(top_m * max_share))
+
+    groups = _group_by_source(features_info)
+    pinned = [f for f in features_info if _is_syntax_feature(f)]
+    pinned_names = {f.get("name", "") for f in pinned}
+
+    mat: Optional[np.ndarray] = None
+    q_vec: Optional[np.ndarray] = None
+    if rank_method == "embedding" and registry_path and settings:
+        mat = _load_embedding_index(registry_path, features_info)
+        if mat is None:
+            mat = _build_embedding_index(registry_path, settings, features_info)
+        if mat is not None and mat.size:
+            q_vec = _load_query_embedding(user_query, registry_path=registry_path, settings=settings)
+
+    mandatory: List[dict] = list(pinned)
+    mandatory_names = set(pinned_names)
+    large_ranked: Dict[str, List[dict]] = {}
+
+    for source, feats in groups.items():
+        feats = [f for f in feats if f.get("name", "") not in pinned_names]
+        if not feats:
+            continue
+        if len(feats) <= t_small:
+            for f in feats:
+                if f.get("name", "") not in mandatory_names:
+                    mandatory.append(f)
+                    mandatory_names.add(f.get("name", ""))
+        else:
+            large_ranked[source] = _order_features_by_relevance(
+                user_query,
+                feats,
+                all_features=features_info,
+                mat=mat,
+                q_vec=q_vec,
+                method=rank_method if q_vec is not None else "token",
+            )
+
+    selected: List[dict] = list(mandatory)
+    selected_names = set(mandatory_names)
+
+    for source, ordered in large_ranked.items():
+        n_take = min(per_source_cap, k_min, len(ordered))
+        for f in ordered[:n_take]:
+            name = f.get("name", "")
+            if name not in selected_names:
+                selected.append(f)
+                selected_names.add(name)
+
+    if len(selected) < top_m:
+        filler: List[dict] = []
+        for ordered in large_ranked.values():
+            for f in ordered:
+                name = f.get("name", "")
+                if name not in selected_names:
+                    filler.append(f)
+        filler = _order_features_by_relevance(
+            user_query,
+            filler,
+            all_features=features_info,
+            mat=mat,
+            q_vec=q_vec,
+            method=rank_method if q_vec is not None else "token",
+        )
+        for f in filler:
+            if len(selected) >= top_m:
+                break
+            source = f.get("source") or "unknown"
+            n_from_source = sum(1 for x in selected if (x.get("source") or "unknown") == source)
+            if n_from_source >= per_source_cap:
+                continue
+            name = f.get("name", "")
+            if name not in selected_names:
+                selected.append(f)
+                selected_names.add(name)
+
+    if len(selected) > top_m:
+        mandatory_set = set(mandatory_names)
+        trimmed = [f for f in selected if f.get("name", "") in mandatory_set]
+        trimmed_names = {f.get("name", "") for f in trimmed}
+        extras = [f for f in selected if f.get("name", "") not in mandatory_set]
+        extras = _order_features_by_relevance(
+            user_query,
+            extras,
+            all_features=features_info,
+            mat=mat,
+            q_vec=q_vec,
+            method=rank_method if q_vec is not None else "token",
+        )
+        for f in extras:
+            if len(trimmed) >= top_m:
+                break
+            trimmed.append(f)
+            trimmed_names.add(f.get("name", ""))
+        selected = trimmed
+
+    return selected
+
+
 def rank_features_for_query(
     user_query: str,
     features_info: List[dict],
@@ -169,25 +401,32 @@ def rank_features_for_query(
     *,
     registry_path: Optional[str] = None,
     settings: Optional[dict] = None,
-    method: str = "embedding",
+    method: str = "stratified",
 ) -> List[dict]:
     if top_m <= 0 or len(features_info) <= top_m:
         return list(features_info)
-    method = method or "embedding"
+    eff = effective_street_rag_settings(settings or {})
+    method = method or eff["feature_retrieval_method"]
+
+    if method == "full":
+        full_max = eff["feature_retrieval_full_catalog_max"]
+        if len(features_info) <= full_max:
+            return list(features_info)
+
+    if method == "stratified":
+        return _stratified_rank(
+            user_query,
+            features_info,
+            top_m,
+            registry_path=registry_path,
+            settings=settings,
+            rank_method="embedding",
+        )
+
     if method == "embedding" and registry_path and settings:
-        mat = _load_embedding_index(registry_path, features_info)
-        if mat is None:
-            mat = _build_embedding_index(registry_path, settings, features_info)
-        if mat is not None and mat.size:
-            q_vec = embed_texts(
-                settings=settings, registry_path=registry_path, texts=[user_query]
-            )[0]
-            order = cosine_topk(q_vec, mat, k=len(features_info))
-            ranked = [features_info[i] for i in order]
-            integ = [f for f in ranked if f.get("name", "").startswith("integration_R")]
-            rest = [f for f in ranked if not f.get("name", "").startswith("integration_R")]
-            budget = max(0, top_m - len(integ))
-            return (integ + rest[:budget])[:top_m]
+        return _flat_embedding_rank(
+            user_query, features_info, top_m, registry_path=registry_path, settings=settings
+        )
     return _token_rank(user_query, features_info, top_m)
 
 
@@ -213,15 +452,7 @@ def build_planner_context(
     excerpt, scale hints, and spatial-targeting / operator guidance."""
     local_r, medium_r, global_r = _scale_hints(registry)
 
-    catalog_excerpt = [
-        {
-            "name": f.get("name", ""),
-            "source": f.get("source", ""),
-            "range": f.get("range", ""),
-            "description": (f.get("description") or "")[:240],
-        }
-        for f in features_info
-    ]
+    catalog_by_source = _group_features_for_planner(features_info)
     existing_excerpt = [
         {
             "index_col": e.get("index_col"),
@@ -233,6 +464,7 @@ def build_planner_context(
     ]
 
     return (
+        f"{language_lock_instruction(user_query)}\n\n"
         f"User query:\n{user_query!r}\n\n"
         "STEP 0 — Spatial targeting (always check first).\n"
         "Does the query reference a SPECIFIC NAMED place? Examples that ARE named places:\n"
@@ -257,8 +489,12 @@ def build_planner_context(
         f"Existing indices ({len(existing_excerpt)}):\n"
         f"{json.dumps(existing_excerpt, ensure_ascii=False, indent=2)}\n\n"
         "STEP 2 — If create_new, choose features from the catalog below\n"
-        "(pre-filtered by semantic retrieval; multi-scale syntax measures always included):\n"
-        f"{json.dumps(catalog_excerpt, ensure_ascii=False, indent=2)}\n\n"
+        "(pre-filtered by source-balanced retrieval: entire small families, capped\n"
+        "samples from large families; multi-scale syntax measures always included):\n"
+        f"{json.dumps(catalog_by_source, ensure_ascii=False, indent=2)}\n\n"
+        "When several sources could answer the query, prefer features whose source\n"
+        "semantics DIRECTLY measure the concept; use other sources only as proxies\n"
+        "when no direct measure exists in the menu.\n\n"
         "Space-syntax scale hints (radii present in this dataset, meters):\n"
         f"  local={local_r}, medium={medium_r}, global={global_r}\n"
         "  - 'walkable / neighbourhood / daily / nearby' → prefer the smallest radius\n"

@@ -13,6 +13,7 @@ from shapely.geometry import Point
 
 from streetrag.core.spatial_utils import morans_i_on_edges
 from streetrag.llm.client import chat_text, load_rag_settings
+from streetrag.llm.language import language_lock_instruction
 from streetrag.llm.retrieval import FeatureWeight, IndexPlan
 from streetrag.skills.base import Skill, SkillResult, skill
 from streetrag.skills.stats import (
@@ -37,6 +38,7 @@ def _format_answer_prompt(
     plan_summary: Optional[dict],
 ) -> str:
     return (
+        f"{language_lock_instruction(user_query)}\n\n"
         f"User question: {user_query!r}\n\n"
         f"Index name: {index_name}\n\n"
         f"Plan summary:\n{json.dumps(plan_summary or {}, ensure_ascii=False, indent=2)}\n\n"
@@ -51,7 +53,7 @@ def _format_answer_prompt(
         "numbers (km of network) so the reader knows the magnitude.\n"
         "3. Spatial pattern: comment briefly on Moran's I (clustered / dispersed / "
         "random) and note any caveats (sampling, scale).\n"
-        "Answer in the same language as the user question. Plain text, no markdown, no JSON."
+        "Follow the LANGUAGE LOCK above. Plain text, no markdown, no JSON."
     )
 
 

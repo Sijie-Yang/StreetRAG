@@ -7,173 +7,223 @@ StreetRAG is an open framework for **LLM-agent-driven, multi-scale street
 network analysis**. The core idea fits in one sentence:
 
 > *Any geodata becomes a column on street edges; any analysis is a Skill;
-> the LLM only selects a Skill and fills its parameters.*
+> the LLM selects tools and skills across a multi-turn agent loop.*
 
 ```
 question
-  ▸ semantic-retrieve a focused feature catalog (embedding cosine, cached)
-  ▸ ONE function-calling LLM step → pick Skill + fill Pydantic params
-  ▸ Skill runs on the StreetNetwork (composite index · multiscale profile ·
-    LISA clusters · correlation · ...)
-  ▸ evidence: length-weighted multi-scale top-k, Moran's I, NAIN/NACH
-  ▸ render: MapLibre + colorbar + hover feature contributions
-  ▸ persist: GPKG columns + data/indices/{col}.json (plan, seed, model, stats)
+  ▸ source-balanced feature retrieval (small families in full, large families capped)
+  ▸ multi-turn agent loop (stream text · tools · skills · proposals)
+  ▸ skills: composite index · multiscale profile · LISA · correlate · review search …
+  ▸ action tools: map visualize · top_edges_table · show_table · propose_index_options
+  ▸ evidence: length-weighted multi-scale top-k, Moran's I, review snippets
+  ▸ render: MapLibre + colorbar + table panel + hover breakdown
+  ▸ persist: slim GPKG (topology) + features/*.parquet + indices/{col}.json
 ```
 
 ## Architecture
 
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the interactive agent loop, SSE event protocol, split storage layout, frontend modules, and API design.
+
+## Dual-layer architecture
+
+| Layer | What it stores | Used for |
+|---|---|---|
+| **Layer A** | Numeric columns on street edges (parquet per source + slim GPKG) | *Where* streets rank — maps, composite indices, LISA |
+| **Layer B** | POI/review text chunks + embeddings (`reviews.lance` or `reviews.npz`) | *Why* — semantic search over review text |
+
+Layer B is optional. POI **ratings** and **densities** still land in Layer A during integrate.
+
+## Repository layout
+
 ```
 streetrag/
-├── core/      StreetNetwork (edges+nodes+catalog), FeatureCatalog, atomic GPKG IO
-├── ingest/    point/line/polygon integrators, multi-format readers, OSMnx download
-├── syntax/    metric integration (momepy) + angular segment analysis
-│              (turn-angle dual graph, metric radius, NAIN / NACH / choice)
-├── skills/    plugin system — one file per Skill, auto-discovered
-├── agent/     function-calling agent: skill manifests = OpenAI tool schemas
-├── llm/       OpenAI client (cache, seed, logs), feature retrieval, IndexPlan
-└── cli.py     streetrag download|scan|integrate|syntax|ask|clean|serve
+├── core/      StreetNetwork, FeatureCatalog, FeatureStore, network GPKG IO
+├── ingest/    integrators, pipeline, OSMnx download
+├── reviews/   POI/review text index (LanceDB or numpy fallback)
+├── syntax/    metric + angular space syntax
+├── skills/    plugin system — one file per Skill (@skill decorator)
+├── agent/     multi-turn loop + action tools (visualize, table, proposals)
+├── llm/       OpenAI client, source-stratified retrieval, language lock
+└── cli.py     download · scan · integrate · syntax · ask · serve · migrate-storage
 ```
 
-**Design rule:** `StreetNetwork` is the single data structure. Every capability
-is a `Skill` — a Pydantic params model plus a `run(net, params) -> SkillResult`.
-The agent converts skill manifests to OpenAI tool schemas automatically, so a
-new skill = one new file under `streetrag/skills/`, nothing else.
+## Quick start (with bundled Singapore sample)
 
-## Quick start
+This repo ships a **Singapore demo case** (~31 MB):
+
+| Path | Contents |
+|---|---|
+| `data/cities/singapore/Singapore_Street_Network_drive.gpkg` | Drive street network (topology) |
+| `data/cities/singapore/sources/Singapore_osm_pois.gpkg` | OSM POI points |
+| `data/cities/singapore/sources/singapore_VATA_perception_points.gpkg` | VATA street-perception points |
+| `data/cities/singapore/feature_registry.json` | Catalog + integration metadata |
+| `data/active_city.json` | Points at `singapore` |
 
 ```bash
 python3.11 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e ".[dev,reviews]"
 
 export OPENAI_API_KEY=sk-...   # or data/RAG_setting.local.json (gitignored)
 
-# 1. Get a network (creates data/cities/singapore/ and activates it)
-.venv/bin/streetrag download --city "Singapore" --network-type drive
-
-# 2. Discover data files (city root + sources/; CSV auto-converted)
-.venv/bin/streetrag scan
-
-# 3. Integrate: space syntax + all external sources onto edges
+# Integrate sample sources onto edges (POI densities + perception columns)
 .venv/bin/streetrag integrate
 
-# 4. Ask
-.venv/bin/streetrag ask "find the most walkable streets"
+# Optional: compute space syntax (integration_R500, …)
+.venv/bin/streetrag syntax --radii 500,1500,4500
 
-# 5. Web UI (map + chat + upload + city switcher)
+# Web UI
 .venv/bin/streetrag serve          # → http://127.0.0.1:8765/
+```
+
+CLI one-shot query:
+
+```bash
+.venv/bin/streetrag ask "Which streets have the highest Temperature Intensity?"
+```
+
+### Fresh city (no sample data)
+
+```bash
+.venv/bin/streetrag download --city "London, UK" --network-type drive
+.venv/bin/streetrag scan
+.venv/bin/streetrag integrate
+.venv/bin/streetrag serve
 ```
 
 ## Multi-city workspace
 
-Each city is a self-contained directory; the active one is switchable from
-the CLI or the web UI's city dropdown:
-
 ```
 data/
-├── RAG_setting.json          global LLM settings (shared)
-├── active_city.json          which city is active
+├── RAG_setting.json
+├── active_city.json
 └── cities/
-    ├── singapore/
-    │   ├── Singapore_drive.gpkg     street network
-    │   ├── feature_registry.json    per-city feature catalog
-    │   ├── sources/                 external geodata (gpkg/csv/geojson/…)
-    │   └── indices/ llm_cache/ …    per-city artifacts
-    └── london/ …
+    └── singapore/          # committed sample (network + sources)
+        ├── Singapore_Street_Network_drive.gpkg
+        ├── sources/
+        ├── features/         # local after integrate (gitignored)
+        ├── indices/          # saved composite indices (local)
+        └── feature_registry.json
 ```
 
 ```bash
-streetrag city list                      # show cities (* = active)
-streetrag download --city "London, UK"   # add a new city + activate
-streetrag city use singapore             # switch back
-streetrag ask "..." --city-name london   # one-off query against another city
+streetrag city list
+streetrag download --city "Tokyo, Japan"
+streetrag city use singapore
 ```
 
-Legacy flat `data/` layouts are migrated automatically on first run.
+> Do not expose the server publicly without auth; it uses your API key and can mutate city data.
 
-> Do not expose the server publicly without auth; it uses your API key and can
-> mutate the GPKG.
+## Storage: geometry vs features
 
-## Data integration ("any geodata → street edges")
+After integrate, StreetNetwork **saves topology to GPKG** and **feature columns to
+`features/<source>.parquet`**, joined at load time by stable `edge_id`.
+One-shot migration for old wide GPKGs:
 
-`streetrag scan` classifies every file in `data/` by geometry type and picks an
-integrator; you can also upload via the web UI (`POST /api/upload` →
-`POST /api/integrate`):
+```bash
+streetrag migrate-storage --city singapore
+```
+
+## Feature retrieval (for index planning)
+
+Default: **`stratified`** (`data/RAG_setting.json`)
+
+- Small source families (≤20 columns) → always shown to the LLM
+- Large families (e.g. 352 POI columns) → capped per source (~40% of menu)
+- Space-syntax `integration_R*` always included when present
+
+Alternatives: `embedding`, `token`, `full` (see `feature_retrieval_method`).
+
+## Data integration
 
 | Geometry | Integrator | Method |
 |---|---|---|
-| Point | `snap_nearest` | mean of k nearest points per edge centroid |
-| Point | `buffer_density` | count / mean rating within radius (per POI category) |
-| Line | `line_overlay` | mean over intersecting source lines (edge buffer) |
-| Polygon | `polygon_area_weighted` | area-weighted mean over intersecting polygons |
+| Point | `snap_nearest` | mean of k nearest points per edge |
+| Point | `buffer_density` | count / mean within radius |
+| Point | `poi_category_density_rating` | per-category density + mean rating |
+| Line | `line_overlay` | mean over intersecting lines |
+| Polygon | `polygon_area_weighted` | area-weighted mean |
 
-Formats: GPKG, GeoJSON, Shapefile, CSV (lon/lat), GeoParquet. CRS is
-auto-projected to a local UTM zone (override: `preferred_crs_epsg`).
+Formats: GPKG, GeoJSON, Shapefile, CSV (lon/lat), GeoParquet.
 
 ## Space syntax
 
-Two families of measures, computed per radius (`--radii 500,1500,4500`):
+Per radius (`500,1500,4500` m by default):
 
-* **Metric integration** `integration_R{r}` — momepy closeness centrality with
-  metric distance (`mm_len`).
-* **Angular segment analysis** `angular_integration_R{r}`, `nain_R{r}`,
-  `choice_R{r}`, `nach_R{r}` — standard formulation (Turner 2001; Hillier,
-  Yang & Turner 2012): segments are dual-graph nodes, the cost between adjacent
-  segments is the turn angle (90° = 1.0), shortest paths are angular while the
-  radius is metric. NAIN = NC^1.2 / total angular depth;
-  NACH = log10(choice+1) / log10(total depth+3).
+* **Metric integration** `integration_R{r}` — momepy closeness (metric `mm_len`)
+* **Angular** `nain_R{r}`, `nach_R{r}`, `choice_R{r}`, … — segment turn-angle graph
 
-Computed columns persist in the GPKG (which acts as the cache); timings are
-logged to `data/syntax_cache/timings.json`. Angular analysis is O(n·E log V) —
-see `experiments/benchmark_syntax.py` for measured scaling.
+Run from CLI or the web UI **Syntax** button.
 
 ## Skills
 
 | Skill | What it does |
 |---|---|
-| `composite_index` | weighted composite street index (4 operators, 5 normalizations, spatial targeting) |
-| `multiscale_profile` | how an index behaves across LOCAL/MEDIUM/GLOBAL radii + cross-scale correlations |
-| `cluster_lisa` | Moran's I + local LISA clusters (HH/LL/HL/LH, needs `pip install esda libpysal`) |
-| `correlate` | Pearson/Spearman between any two edge features |
+| `composite_index` | Weighted composite index; spatial targeting; map render |
+| `multiscale_profile` | Index behaviour across LOCAL / MEDIUM / GLOBAL scales |
+| `cluster_lisa` | Moran's I + LISA clusters (`esda` / `libpysal`) |
+| `correlate` | Pearson / Spearman between two edge columns |
+| `poi_review_search` | Semantic search over review text (Layer B) |
+| `answer_directly` | Meta / help when no analysis skill applies |
 
-Adding a skill:
+## Agent action tools (web chat)
 
-```python
-# streetrag/skills/my_skill.py — that's the whole integration
-from pydantic import BaseModel
-from streetrag.skills.base import Skill, SkillResult, skill
+| Tool | Purpose |
+|---|---|
+| `propose_index_options` | 2–4 index proposals as clickable cards (user confirms → create) |
+| `top_edges_table` | **Real** top-N edge query → right-hand table panel + CSV export |
+| `show_table` | Small summary tables composed by the LLM |
+| `visualize_feature` | Colour map by column |
+| `list_features_stats` / `get_feature_detail` | Explore catalog |
 
-class MyParams(BaseModel):
-    col: str
-    user_query: str = ""
+Example chat prompts:
 
-@skill
-class MySkill(Skill):
-    name = "my_skill"
-    description = "One sentence the agent uses for routing."
-    params_model = MyParams
-
-    def run(self, net, params) -> SkillResult:
-        ...
-        return SkillResult(skill_name=self.name, reply="...", render_map=False)
+```text
+Show a table of the top 20 streets with the highest Temperature Intensity.
+Create an urban comfort index using greenery, shade, and temperature perception.
+Correlate Greenery Rate and Temperature Intensity.
+Map Shading Area on the network.
 ```
+
+## Web UI
+
+Open http://127.0.0.1:8765/ after `streetrag serve`.
+
+| Area | Description |
+|---|---|
+| **Data** | File list by source, integrate / reload / delete, upload |
+| **Features** | All edge columns; Map · + Chat · Del |
+| **Indices** | Saved composite indices; click to render |
+| **Chat** | Multi-turn agent with streaming progress |
+| **Table panel** | Opens on `top_edges_table` / `show_table`; export CSV |
+| **Syntax** | Configure radii and run space syntax |
+| **+ City** | Download a new city from OSM |
+
+On first launch without any city data, the server auto-downloads Singapore from OSM.
+With the **bundled sample**, it activates `singapore` immediately.
+
+## Web API (selected)
+
+Read: `GET /api/edges-geojson`, `/api/indices`, `/api/index/{col}`, `/api/datasets`, `/api/features`, …
+
+Actions: `POST /api/chat-stream` (SSE), `/api/create-index`, `/api/integrate-stream`,
+`/api/upload`, `/api/syntax/run-stream`, `/api/route`, …
 
 ## Reproducibility
 
-Every LLM call is cached on disk keyed by `(model, seed, temperature, prompt)`
-sha and fully logged to `data/llm_logs/`. Saved indices
-(`data/indices/{col}.json`) record the plan, weights, rationales, model, seed,
-and all spatial statistics needed to re-run them.
+LLM calls cached under `data/cities/<city>/llm_cache/`. Saved indices in
+`indices/{col}.json` record weights, stats, model, and seed.
 
-## Experiments (`experiments/`)
+## Experiments
 
-* `queries.json` — bilingual evaluation query set
-* `cities.json` — multi-city study plan
-* `run_eval.py` — retrieval baselines (token vs embedding), plan reproducibility
-* `benchmark_syntax.py` — angular/metric syntax runtime scaling
+* `experiments/queries.json` — evaluation queries
+* `experiments/run_eval.py` — retrieval baselines (`token` / `embedding` / `stratified`)
 
-## Web API surface
+## Tests
 
-`GET /api/edges-geojson · /api/indices · /api/index/{col} · /api/edge-info ·
-/api/geocode · /api/integrators` — read-only.
-`POST /api/chat-stream (SSE) · /api/chat · /api/index-chat · /api/route ·
-/api/upload · /api/integrate · /api/scan` — actions.
+```bash
+.venv/bin/pytest tests/ -q
+```
+
+## License
+
+See repository license file. Sample geodata is provided for research/demo use; check source attributions (OSM, VATA) before redistribution.

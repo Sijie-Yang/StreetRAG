@@ -68,7 +68,13 @@ class FeatureCatalog:
 
     @property
     def target_layer(self) -> str:
-        return self._data.get("target_layer", "edges")
+        return self._data.get("target_layer", "network")
+
+    def uses_split_storage(self) -> bool:
+        if self._data.get("storage_layout") == "split":
+            return True
+        d = self.data_dir / "features"
+        return d.is_dir() and any(d.glob("*.parquet"))
 
     @property
     def percentile_suffix(self) -> str:
@@ -200,6 +206,36 @@ class FeatureCatalog:
     def add_point_integration(self, config: dict) -> None:
         self.point_integrations.append(config)
 
+    def upsert_point_integration(self, config: dict) -> None:
+        """Replace an existing integration block for the same source file/layer."""
+        sf = config.get("source_file")
+        layer = config.get("source_layer")
+        kept = [
+            b
+            for b in self.point_integrations
+            if not (b.get("source_file") == sf and b.get("source_layer") == layer)
+        ]
+        self._data["point_integrations"] = kept
+        self.point_integrations.append(config)
+
+    @property
+    def text_integrations(self) -> List[dict]:
+        return self._data.setdefault("text_integrations", [])
+
+    def upsert_text_integration(self, config: dict) -> None:
+        sf = config.get("source_file")
+        layer = config.get("source_layer")
+        kept = [
+            b
+            for b in self.text_integrations
+            if not (b.get("source_file") == sf and b.get("source_layer") == layer)
+        ]
+        self._data["text_integrations"] = kept
+        self.text_integrations.append(config)
+
+    def review_index_path(self) -> Path:
+        return self.data_dir / "reviews.lance"
+
     def rag_settings_path(self) -> Path:
         local = self.data_dir / "RAG_setting.local.json"
         if local.exists():
@@ -253,6 +289,100 @@ class FeatureCatalog:
             except Exception:
                 pass
         return out
+
+    def _normalization_suffixes(self) -> List[str]:
+        methods = self._data.get("normalization_methods") or [
+            "percentile", "zscore", "minmax", "robust"
+        ]
+        suffix_map = {
+            "percentile": self.percentile_suffix,
+            "zscore": "_zscore",
+            "minmax": "_minmax",
+            "robust": "_robust",
+        }
+        return [suffix_map.get(m, f"_{m}") for m in methods]
+
+    def related_columns(self, col_name: str) -> List[str]:
+        """Return col_name plus normalization derivative columns."""
+        out = [col_name]
+        stats = self.feature_statistics.get(col_name) or {}
+        norm_cols = stats.get("normalization_columns") or {}
+        for v in norm_cols.values():
+            if v and v not in out:
+                out.append(v)
+        pcol = stats.get("percentile_column")
+        if pcol and pcol not in out:
+            out.append(pcol)
+        for suf in self._normalization_suffixes():
+            derived = f"{col_name}{suf}"
+            if derived not in out:
+                out.append(derived)
+        return out
+
+    def remove_feature_stats(self, col_name: str) -> List[str]:
+        """Remove feature from registry stats/descriptions. Returns columns to drop from GPKG."""
+        removed = self.related_columns(col_name)
+        self.feature_statistics.pop(col_name, None)
+        descs = self.load_descriptions()
+        for c in removed:
+            descs.pop(c, None)
+        self.save_descriptions(descs)
+        tn = self._data.setdefault("target_network_features", {})
+        for c in removed:
+            tn.pop(c, None)
+        if col_name in self.composite_index_columns:
+            self.composite_index_columns.remove(col_name)
+        return removed
+
+    def remove_index(self, col: str) -> bool:
+        """Delete saved index record and registry entries."""
+        p = self.index_path(col)
+        existed = p.exists()
+        if existed:
+            p.unlink()
+        self.remove_feature_stats(col)
+        return existed
+
+    def remove_point_integration(self, source_file: str, *, layer: Optional[str] = None) -> Optional[dict]:
+        """Remove integration block; return removed block or None."""
+        removed = None
+        kept = []
+        for b in self.point_integrations:
+            if b.get("source_file") == source_file and (layer is None or b.get("source_layer") == layer):
+                removed = b
+            else:
+                kept.append(b)
+        self._data["point_integrations"] = kept
+        if removed:
+            for col in (removed.get("columns") or {}):
+                self.remove_feature_stats(col)
+        # text integration
+        kept_txt = [
+            b for b in self.text_integrations
+            if not (b.get("source_file") == source_file and (layer is None or b.get("source_layer") == layer))
+        ]
+        self._data["text_integrations"] = kept_txt
+        return removed
+
+    def list_all_features(self) -> List[dict]:
+        """Rich feature list for UI and agent."""
+        out = []
+        seen = set()
+        for name, stats in self.feature_statistics.items():
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append({
+                "name": name,
+                "description": self.get_description(name),
+                "source": self.infer_source(name),
+                "is_index": name in self.composite_index_columns,
+                "is_syntax": name.startswith(
+                    ("integration_R", "angular_", "nain_", "choice_", "nach_")
+                ),
+                "stats": stats,
+            })
+        return sorted(out, key=lambda r: r["name"])
 
     def to_legacy_registry(self) -> dict:
         """Return registry dict compatible with legacy scripts."""

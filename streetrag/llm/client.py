@@ -7,7 +7,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Type, TypeVar, Callable
 
 import numpy as np
 from pydantic import BaseModel
@@ -343,6 +343,123 @@ def chat_tools(
             last_err = exc
             time.sleep(min(2 ** attempt, 6))
     raise RuntimeError(f"LLM chat_tools failed after {max_retries} retries: {last_err}")
+
+
+def chat_tools_stream(
+    *,
+    settings: dict,
+    registry_path: str,
+    messages: List[dict],
+    tools: List[dict],
+    tool_choice: str = "auto",
+):
+    """Stream a tool-capable chat completion.
+
+    Yields dict events:
+      {type: text_delta, delta: str}
+      {type: thinking_delta, delta: str}  (reasoning models when available)
+      {type: tool_call_delta, index, id?, name?, arguments_delta}
+      {type: done, message: dict}  — full assistant message for history
+    """
+    api_key = require_api_key(settings)
+    model = settings.get("llm_model", "gpt-4o-mini")
+    temperature = float(settings.get("llm_temperature", 0.0))
+    seed = settings.get("llm_seed", 42)
+    client = _build_client(api_key)
+
+    stream = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        tools=tools if tools else None,
+        tool_choice=tool_choice if tools else None,
+        stream=True,
+        **_sampling_kwargs(model, temperature, seed),
+    )
+
+    content_parts: List[str] = []
+    thinking_parts: List[str] = []
+    tool_calls: Dict[int, dict] = {}
+
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        choice = chunk.choices[0]
+        delta = choice.delta
+
+        # Reasoning / thinking (o-series models)
+        reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+        if reasoning:
+            thinking_parts.append(str(reasoning))
+            yield {"type": "thinking_delta", "delta": str(reasoning)}
+
+        if delta.content:
+            content_parts.append(delta.content)
+            yield {"type": "text_delta", "delta": delta.content}
+
+        if delta.tool_calls:
+            for tc_delta in delta.tool_calls:
+                idx = tc_delta.index
+                if idx not in tool_calls:
+                    tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                if tc_delta.id:
+                    tool_calls[idx]["id"] = tc_delta.id
+                if tc_delta.function:
+                    if tc_delta.function.name:
+                        tool_calls[idx]["name"] = tc_delta.function.name
+                    if tc_delta.function.arguments:
+                        tool_calls[idx]["arguments"] += tc_delta.function.arguments
+                yield {
+                    "type": "tool_call_delta",
+                    "index": idx,
+                    "id": tool_calls[idx]["id"],
+                    "name": tool_calls[idx]["name"],
+                    "arguments_delta": tc_delta.function.arguments if tc_delta.function else "",
+                }
+
+    # Build assistant message for conversation history
+    message: dict = {"role": "assistant", "content": "".join(content_parts) or None}
+    if thinking_parts:
+        message["reasoning"] = "".join(thinking_parts)
+    if tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": tc["id"],
+                "type": "function",
+                "function": {"name": tc["name"], "arguments": tc["arguments"]},
+            }
+            for _, tc in sorted(tool_calls.items())
+        ]
+    yield {"type": "done", "message": message}
+
+
+def chat_tools_stream_collect(
+    *,
+    settings: dict,
+    registry_path: str,
+    messages: List[dict],
+    tools: List[dict],
+    tool_choice: str = "auto",
+    on_event: Optional[Callable[[dict], None]] = None,
+) -> dict:
+    """Run chat_tools_stream and collect the final assistant message."""
+    final_message: Optional[dict] = None
+    for ev in chat_tools_stream(
+        settings=settings,
+        registry_path=registry_path,
+        messages=messages,
+        tools=tools,
+        tool_choice=tool_choice,
+    ):
+        if on_event:
+            try:
+                on_event(ev)
+            except Exception:
+                pass
+        if ev.get("type") == "done":
+            final_message = ev.get("message")
+    if not final_message:
+        raise RuntimeError("Stream ended without done event")
+    return final_message
 
 
 def embed_texts(

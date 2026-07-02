@@ -67,6 +67,11 @@ class Workspace:
                     cat = FeatureCatalog(reg)
                     info["network"] = cat.raw.get("target_network")
                     info["n_features"] = len(cat.feature_statistics)
+                    info["syntax_radii"] = cat.syntax_radii
+                    info["n_syntax"] = sum(
+                        1 for c in cat.feature_statistics
+                        if c.startswith(("integration_R", "angular_", "nain_", "choice_", "nach_"))
+                    )
                     info["n_indices"] = len(list((d / "indices").glob("*.json"))) if (d / "indices").exists() else 0
                 except Exception:
                     pass

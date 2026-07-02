@@ -18,3 +18,4 @@ python-multipart>=0.0.9
 pytest>=7.4
 
 # Optional for LISA clusters: pip install esda libpysal
+# Optional for LanceDB review index: pip install lancedb pyarrow

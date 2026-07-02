@@ -42,7 +42,7 @@ def run_baseline_eval(args: argparse.Namespace) -> None:
     for q in queries:
         text = q.get("query", q.get("text", ""))
         qid = q.get("id")
-        for method in ("token", "embedding"):
+        for method in ("token", "embedding", "stratified"):
             ranked = rank_features_for_query(
                 text, features, top_m=args.top_m,
                 registry_path=registry_path,
